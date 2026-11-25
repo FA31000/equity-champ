@@ -100,6 +100,9 @@ tr.voided td:last-child { text-decoration: none }
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: -12px }
 .tabs a { padding: 10px 16px; font-weight: 600; color: var(--muted); text-decoration: none; border-bottom: 3px solid transparent; margin-bottom: -1px }
 .tabs a[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink) }
+.chip { padding: 6px 14px; border-radius: 999px; font-size: 13px; background: var(--bg) }
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink) }
+.toggle { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); margin-left: auto }
 .rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px }
 .rules div { font-size: 14px } .rules b { font-family: var(--f-mono) }
 
@@ -138,6 +141,7 @@ tr.voided td:last-child { text-decoration: none }
   <section class="panel" id="ticket" aria-label="Order ticket"></section>
   <section class="panel" aria-label="Order tape">
     <div class="row" style="justify-content:space-between"><h2>Everyone's orders</h2><span class="muted" id="logcount"></span></div>
+    <div class="row" id="logfilters"></div>
     <div class="scroll" id="log"></div>
   </section>
   </div>
@@ -151,6 +155,7 @@ const WEEK = 7 * 864e5;
 const STALE_MS = 30 * 60e3;
 const UNDO_MS = 15 * 60e3;
 const handled = new Set();
+const LF = { who: "all", undone: false };
 let confirmUndo = null;
 const DEFAULTS = { startCash: 10000, maxPositionPct: 0.25, minWeeklyTradePct: 0.10, missedWeekPenalty: 100, maxHoldings: 10, startedAt: null, names: { p1: "FA", p2: "Louis" } };
 const SEATS = ["p1", "p2"];
@@ -586,7 +591,10 @@ function renderHoldings() {
 }
 function renderLog() {
   const box = $("log");
-  const list = S.orders.filter((o) => o.status !== "cancelled").sort((a, b) => (b.filledAt || b.createdAt) - (a.filledAt || a.createdAt)).slice(0, 200);
+  $("logfilters").replaceChildren(
+    ...[["all", "All"], ["p1", nm("p1")], ["p2", nm("p2")]].map(([v, label]) => h("button", { class: "chip", "aria-pressed": String(LF.who === v), onclick: () => { LF.who = v; renderLog(); }, text: label })),
+    h("label", { class: "toggle" }, h("input", { type: "checkbox", id: "showundone", checked: LF.undone, onchange: (e) => { LF.undone = e.target.checked; renderLog(); } }), "Show undone"));
+  const list = S.orders.filter((o) => o.status !== "cancelled" && (LF.undone || o.status !== "voided") && (LF.who === "all" || o.player === LF.who)).sort((a, b) => (b.filledAt || b.createdAt) - (a.filledAt || a.createdAt)).slice(0, 200);
   $("logcount").textContent = S.orders.filter((o) => o.status === "filled").length + " fills";
   if (!list.length) { box.replaceChildren(h("div", { class: "empty", text: "No trades yet. The first order shows up here for both players." })); return; }
   const me = mySeat();
