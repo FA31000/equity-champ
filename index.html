@@ -150,6 +150,7 @@ const CONN = "Interactive Brokers (IBKR)";
 const WEEK = 7 * 864e5;
 const STALE_MS = 30 * 60e3;
 const UNDO_MS = 15 * 60e3;
+const handled = new Set();
 let confirmUndo = null;
 const DEFAULTS = { startCash: 10000, maxPositionPct: 0.25, minWeeklyTradePct: 0.10, missedWeekPenalty: 100, maxHoldings: 10, startedAt: null, names: { p1: "FA", p2: "Louis" } };
 const SEATS = ["p1", "p2"];
@@ -339,13 +340,21 @@ async function processPending() {
   } finally { busyFill = false; }
 }
 async function fillOne(id) {
+  if (handled.has(id)) return;
+  handled.add(id);
+  try { return await fillOneInner(id); } finally { handled.delete(id); }
+}
+async function fillOneInner(id) {
   const ref = db.doc("orders/" + id);
-  const lease = await ref.acquire({ holder: TAB, ttlMs: 60000 });
+  // Each attempt gets its own lease holder, so a second attempt (even from this tab) waits out the 60 s lease.
+  const lease = await ref.acquire({ holder: TAB + ":" + id + ":" + Date.now(), ttlMs: 60000 });
   if (!lease.acquired) return;
   const snap = await ref.get();
   if (!snap.exists) return;
   const o = Object.assign({ id }, snap.data());
   if (o.status !== "pending") return;
+  const seen = S.orders.find((x) => x.id === id);
+  if (seen && seen.status !== "pending") return;
   const c = cfg();
   const reject = (reason) => ref.update({ status: "rejected", reason, decidedAt: Date.now() });
 
