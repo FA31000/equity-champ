@@ -1,0 +1,750 @@
+<title>Equity Champ</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: a two-lane scoreboard (one lane per player) over a working order ticket, then holdings and the shared trade tape. */
+:root {
+  --bg: #eef1ee; --surface: #ffffff; --sunk: #e4e8e4; --ink: #15201b; --muted: #5a6962; --line: #d3d9d4;
+  --p1: #2550c4; --p1-soft: #e3e9fb; --p2: #b8501a; --p2-soft: #f8e7dc;
+  --up: #0f7a55; --down: #bf3329; --warn: #9a6a00; --warn-soft: #fbf0d4;
+  --focus: #2550c4;
+  --f-display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --f-body: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0e1311; --surface: #161d1a; --sunk: #111714; --ink: #e5ece8; --muted: #8fa098; --line: #28322e;
+  --p1: #86a3ff; --p1-soft: #1b2440; --p2: #f39a63; --p2-soft: #3a2418;
+  --up: #43cf97; --down: #ff7d70; --warn: #f2c14e; --warn-soft: #33290f; --focus: #86a3ff; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0e1311; --surface: #161d1a; --sunk: #111714; --ink: #e5ece8; --muted: #8fa098; --line: #28322e;
+  --p1: #86a3ff; --p1-soft: #1b2440; --p2: #f39a63; --p2-soft: #3a2418;
+  --up: #43cf97; --down: #ff7d70; --warn: #f2c14e; --warn-soft: #33290f; --focus: #86a3ff; color-scheme: dark }
+* { box-sizing: border-box }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.5 }
+.wrap { max-width: 1120px; margin: 0 auto; padding-block: 28px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 28px }
+h1, h2 { font-family: var(--f-display); margin: 0; text-wrap: balance }
+h1 { font-size: clamp(28px, 5vw, 40px); font-weight: 800; letter-spacing: -0.02em }
+h2 { font-size: 20px; font-weight: 600 }
+.num, td.n, .mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums }
+.muted { color: var(--muted) }
+.label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600 }
+header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 12px }
+.status { display: flex; flex-wrap: wrap; gap: 8px; align-items: center }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--sunk); color: var(--muted); border: 1px solid var(--line) }
+.pill.ok { color: var(--up) } .pill.bad { color: var(--down) } .pill.warn { color: var(--warn); background: var(--warn-soft); border-color: transparent }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor }
+
+/* scoreboard */
+.board { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--surface) }
+.lane { padding: 22px; display: grid; gap: 14px; min-width: 0; position: relative }
+.lane + .lane { border-left: 1px solid var(--line) }
+.lane.p1 { --pc: var(--p1); --pcs: var(--p1-soft) } .lane.p2 { --pc: var(--p2); --pcs: var(--p2-soft) }
+.lane::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 4px; background: var(--pc) }
+.who { display: flex; align-items: center; gap: 10px; min-width: 0 }
+.who img { width: 30px; height: 30px; border-radius: 50%; flex: none }
+.who .nm { font-weight: 600; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.tag { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--pc); background: var(--pcs); padding: 2px 8px; border-radius: 6px }
+.big { font-family: var(--f-display); font-weight: 800; font-size: clamp(30px, 6vw, 46px); letter-spacing: -0.02em; line-height: 1.05; font-variant-numeric: tabular-nums }
+.ret { font-family: var(--f-mono); font-weight: 600 }
+.up { color: var(--up) } .down { color: var(--down) }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px }
+.stats div { min-width: 0 } .stats .num { font-size: 14px }
+.weekchip { font-size: 13px; padding: 8px 12px; border-radius: 8px; background: var(--sunk) }
+.weekchip.done { color: var(--up) } .weekchip.due { background: var(--warn-soft); color: var(--warn) }
+.leader { position: absolute; top: 18px; right: 18px }
+
+/* ticket */
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px; display: grid; gap: 16px; min-width: 0 }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end }
+.field { display: grid; gap: 4px; min-width: 0 }
+input, select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; min-width: 0 }
+input.grow { flex: 1 1 220px }
+button { font: inherit; font-weight: 600; cursor: pointer; border-radius: 8px; padding: 9px 16px; border: 1px solid var(--line); background: var(--sunk); color: var(--ink) }
+button.primary { background: var(--ink); color: var(--bg); border-color: var(--ink) }
+button.buy { background: var(--up); color: var(--surface); border-color: var(--up) }
+button.sell { background: var(--down); color: var(--surface); border-color: var(--down) }
+button:disabled { opacity: .45; cursor: not-allowed }
+button.link { background: none; border: none; padding: 0; color: var(--muted); text-decoration: underline; font-weight: 500 }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px }
+.results { display: grid; gap: 6px; max-height: 280px; overflow: auto }
+.res { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; text-align: left; font-weight: 500; background: var(--bg) }
+.res .sym { font-family: var(--f-mono); font-weight: 600 }
+.res .ds { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted) }
+.sel { display: grid; gap: 14px; padding: 16px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line) }
+.sel .head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; align-items: baseline }
+.sel .px { font-family: var(--f-mono); font-size: 20px; font-weight: 600 }
+.sides { display: grid; grid-template-columns: 1fr 1fr; gap: 14px }
+.side { display: grid; gap: 8px; align-content: start; min-width: 0 }
+.msg { font-size: 14px; padding: 10px 12px; border-radius: 8px; background: var(--sunk) }
+.msg.err { color: var(--down) } .msg.ok { color: var(--up) }
+
+/* tables */
+.tables { display: grid; grid-template-columns: 1fr 1fr; gap: 20px }
+.scroll { overflow-x: auto; min-width: 0 }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px }
+th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap }
+td { padding: 8px; border-bottom: 1px solid var(--line); white-space: nowrap }
+td.n, th.n { text-align: right }
+tr:last-child td { border-bottom: none }
+.side-b { color: var(--up); font-weight: 700 } .side-s { color: var(--down); font-weight: 700 }
+.sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px }
+.st { font-size: 12px; font-weight: 600 } .st.pending { color: var(--warn) } .st.rejected, .st.cancelled { color: var(--muted) }
+.empty { padding: 18px; text-align: center; color: var(--muted); font-size: 14px }
+.view { display: grid; gap: 28px }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: -12px }
+.tabs a { padding: 10px 16px; font-weight: 600; color: var(--muted); text-decoration: none; border-bottom: 3px solid transparent; margin-bottom: -1px }
+.tabs a[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink) }
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px }
+.rules div { font-size: 14px } .rules b { font-family: var(--f-mono) }
+
+@media (max-width: 760px) {
+  .board, .tables, .sides { grid-template-columns: 1fr }
+  .lane + .lane { border-left: none; border-top: 1px solid var(--line) }
+}
+@media (prefers-reduced-motion: no-preference) { .big { transition: color .3s } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <div class="label">Head-to-head stock picking</div>
+      <h1>Equity Champ</h1>
+    </div>
+    <div class="status" id="status"><span class="pill">Loading game…</span></div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <a href="#standings" role="tab" id="tab-standings">Standings</a>
+    <a href="#orders" role="tab" id="tab-orders">Orders</a>
+  </nav>
+
+  <div class="view" id="view-standings">
+  <section class="board" id="board" aria-label="Scoreboard"></section>
+  <section class="tables" id="holdings" aria-label="Holdings"></section>
+  <section class="panel" aria-label="Rules">
+    <h2>Rules</h2>
+    <div class="rules" id="rules"></div>
+    <p class="muted" style="margin:0;font-size:13px">Prices come from Interactive Brokers at fill time and are converted to USD at the live FX rate. Every order fills at the next live quote; orders placed while a market is closed wait for the open. Players without IBKR connected can still place orders: they fill when a player with IBKR has the page open.</p>
+  </section>
+  </div>
+
+  <div class="view" id="view-orders" hidden>
+  <section class="panel" id="ticket" aria-label="Order ticket"></section>
+  <section class="panel" aria-label="Order tape">
+    <div class="row" style="justify-content:space-between"><h2>Everyone's orders</h2><span class="muted" id="logcount"></span></div>
+    <div class="scroll" id="log"></div>
+  </section>
+  </div>
+</div>
+
+<script>
+(() => {
+"use strict";
+const CONN = "Interactive Brokers (IBKR)";
+const WEEK = 7 * 864e5;
+const STALE_MS = 30 * 60e3;
+const DEFAULTS = { startCash: 10000, maxPositionPct: 0.25, minWeeklyTradePct: 0.10, missedWeekPenalty: 100, maxHoldings: 10, startedAt: null, names: { p1: "FA", p2: "Louis" } };
+const SEATS = ["p1", "p2"];
+const TAB = Math.random().toString(36).slice(2);
+// Quote currency by listing country. GBX/ZAC/ILA are minor units (1/100 of GBP/ZAR/ILS).
+const CC = { US:"USD", CA:"CAD", GB:"GBX", NL:"EUR", DE:"EUR", FR:"EUR", IT:"EUR", ES:"EUR", BE:"EUR", PT:"EUR", IE:"EUR", FI:"EUR", AT:"EUR",
+  CH:"CHF", JP:"JPY", HK:"HKD", AU:"AUD", NZ:"NZD", SE:"SEK", NO:"NOK", DK:"DKK", SG:"SGD", KR:"KRW", TW:"TWD", IN:"INR",
+  MX:"MXN", CZ:"CZK", PL:"PLN", ZA:"ZAC", IL:"ILA", BR:"BRL", CN:"CNH", HU:"HUF", TR:"TRY" };
+const MINOR = { GBX: "GBP", ZAC: "ZAR", ILA: "ILS" };
+const CCY_LIST = ["USD","EUR","GBP","GBX","CHF","JPY","HKD","CAD","AUD","NZD","SEK","NOK","DKK","SGD","KRW","TWD","INR","MXN","CZK","PLN","ZAR","ZAC","ILS","ILA","BRL","CNH","HUF","TRY"];
+const KNOWN_FX = { EUR: { conid: 12087792, invert: false }, GBP: { conid: 12087797, invert: false }, JPY: { conid: 15016059, invert: true } };
+
+const S = { cfg: null, seats: {}, orders: [], quotes: {}, fx: {}, inst: {}, me: null, canWrite: null, loaded: false, slow: false,
+  ibkr: "checking", ibkrMsg: "", profiles: {} };
+const T = { query: "", results: null, searching: false, sel: null, quote: null, msg: null, busy: false, manual: false };
+let db = null, user = null, mcp = null, perms = null, busyFill = false;
+
+// ---------- helpers ----------
+const $ = (id) => document.getElementById(id);
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") e.className = v;
+    else if (k === "text") e.textContent = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (k === "value") e.value = v;
+    else e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()) if (c != null && c !== false) e.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return e;
+}
+const usd = (n) => n == null || !isFinite(n) ? "—" : n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pct = (n, d = 2) => n == null || !isFinite(n) ? "—" : (n >= 0 ? "+" : "") + (n * 100).toFixed(d) + "%";
+const qtyFmt = (n) => n == null ? "—" : (+n).toLocaleString("en-US", { maximumFractionDigits: 4 });
+const pxFmt = (n) => n == null ? "—" : (+n).toLocaleString("en-US", { maximumFractionDigits: n < 10 ? 4 : 2, minimumFractionDigits: 2 });
+const dt = (t) => t ? new Date(t).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+const day = (t) => new Date(t).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+const num = (v) => (typeof v === "number" && isFinite(v)) ? v : (typeof v === "string" && v.trim() !== "" && isFinite(+v) ? +v : null);
+const cfg = () => Object.assign({}, DEFAULTS, S.cfg || {});
+const nm = (k) => (cfg().names || DEFAULTS.names)[k] || k.toUpperCase();
+const mySeat = () => SEATS.find((k) => S.me && S.seats[k]?.uid === S.me) || null;
+const major = (c) => MINOR[c] || c;
+const minorDiv = (c) => MINOR[c] ? 100 : 1;
+const routeEx = (inst) => inst.country === "US" ? "SMART" : inst.exchange;
+function payloadOf(res) { let p = res?.payload; if (typeof p === "string") { try { p = JSON.parse(p); } catch {} } return p; }
+
+// ---------- portfolio maths ----------
+function replay(seat, upTo) {
+  const c = cfg();
+  let cash = c.startCash;
+  const pos = {};
+  const fills = S.orders.filter((o) => o.player === seat && o.status === "filled" && o.filledAt).sort((a, b) => a.filledAt - b.filledAt);
+  const weeks = [];
+  if (c.startedAt) {
+    for (let k = 0; ; k++) {
+      const ws = c.startedAt + k * WEEK, we = ws + WEEK;
+      if (ws > upTo) break;
+      const ok = fills.some((o) => o.filledAt >= ws && o.filledAt < we && (o.pct || 0) >= c.minWeeklyTradePct - 1e-9);
+      weeks.push({ k, ws, we, ok, closed: we <= upTo });
+    }
+  }
+  const events = fills.map((o) => ({ t: o.filledAt, o }))
+    .concat(weeks.filter((w) => w.closed && !w.ok).map((w) => ({ t: w.we, pen: c.missedWeekPenalty, w })))
+    .sort((a, b) => a.t - b.t);
+  let penaltyTotal = 0;
+  for (const ev of events) {
+    if (ev.t > upTo) break;
+    if (ev.pen) { cash -= ev.pen; penaltyTotal += ev.pen; continue; }
+    const o = ev.o, id = String(o.conid);
+    const p = pos[id] || (pos[id] = { conid: o.conid, symbol: o.symbol, qty: 0, cost: 0, lastUsd: null });
+    if (o.side === "buy") { cash -= o.usdValue; p.qty += o.qty; p.cost += o.usdValue; }
+    else { const frac = p.qty > 0 ? Math.min(1, o.qty / p.qty) : 1; p.cost -= p.cost * frac; p.qty -= o.qty; cash += o.usdValue; }
+    p.lastUsd = o.usdPrice;
+    if (p.qty < 1e-9) delete pos[id];
+  }
+  return { cash, pos, weeks, penaltyTotal };
+}
+function value(seat, quoteMap) {
+  const r = replay(seat, Date.now());
+  let invested = 0;
+  for (const p of Object.values(r.pos)) {
+    const q = (quoteMap || S.quotes)[String(p.conid)];
+    p.usdPrice = num(q?.usdPrice) ?? p.lastUsd;
+    p.value = p.qty * p.usdPrice;
+    invested += p.value;
+  }
+  return Object.assign(r, { invested, total: r.cash + invested });
+}
+
+// ---------- IBKR calls ----------
+async function ib(tool, input) {
+  const res = await mcp.callTool(CONN, tool, input, { cache: false });
+  return payloadOf(res);
+}
+function parseQuote(d) {
+  if (!d || typeof d !== "object") return null;
+  const last = d.last || {}, ba = d["bid-ask"] || {}, pc = d["prior-close"] || {};
+  let price = num(last.price);
+  const bid = num(ba.bid), ask = num(ba.ask);
+  if (price == null && bid != null && ask != null && bid > 0 && ask > 0) price = (bid + ask) / 2;
+  if (price == null) price = num(pc.priorClose);
+  if (price == null) return null;
+  const ts = num(last.ts) ? last.ts * 1000 : null;
+  const closed = !!(last.is_close || last.halted) || (ts != null && Date.now() - ts > STALE_MS);
+  return { price, ts, closed };
+}
+async function snapshot(keys) {
+  const out = {};
+  const uniq = [...new Set(keys)];
+  for (let i = 0; i < uniq.length; i += 33) {
+    const chunk = uniq.slice(i, i + 33);
+    const p = await ib("get_price_snapshot", { contract_id_exs: chunk, market_data_names: ["last", "bid_ask", "prior_close"] });
+    for (const k of chunk) {
+      const d = p?.[k] ?? (chunk.length === 1 && p && p.last ? p : null);
+      out[k] = parseQuote(d);
+    }
+  }
+  return out;
+}
+async function resolveFx(ccy) {
+  if (KNOWN_FX[ccy]) return KNOWN_FX[ccy];
+  const have = S.fx[ccy];
+  if (have?.conid) return { conid: have.conid, invert: !!have.invert };
+  for (const q of [ccy + ".USD", "USD." + ccy]) {
+    const p = await ib("search_contracts", { query: q });
+    const row = (p?.results || []).find((r) => r.exchange === "IDEALPRO" && (r.sections || []).some((s) => s.security_type === "CASH"));
+    if (row && (row.symbol === ccy || row.symbol === "USD")) return { conid: row.underlying_contract_id, invert: row.symbol === "USD" };
+  }
+  throw new Error("No USD exchange rate found for " + ccy);
+}
+async function fxRates(ccys) {
+  const rates = { USD: 1 };
+  const need = [...new Set(ccys.map(major))].filter((c) => c !== "USD");
+  const metas = {};
+  for (const c of need) metas[c] = await resolveFx(c);
+  if (!need.length) return rates;
+  const q = await snapshot(need.map((c) => metas[c].conid + "@IDEALPRO"));
+  for (const c of need) {
+    const v = q[metas[c].conid + "@IDEALPRO"];
+    if (!v) throw new Error("No live exchange rate for " + c);
+    rates[c] = metas[c].invert ? 1 / v.price : v.price;
+    const prev = S.fx[c];
+    if (canWrite() && (!prev || Math.abs((prev.usdPer || 0) - rates[c]) / rates[c] > 1e-5 || Date.now() - (prev.ts || 0) > 5 * 60e3)) {
+      await db.doc("fx/" + c).set({ ccy: c, conid: metas[c].conid, invert: metas[c].invert, usdPer: rates[c], ts: Date.now() }).catch(() => {});
+    }
+  }
+  return rates;
+}
+// Fresh quotes for instruments (by conid), written to the shared cache. Returns {conid: {price, usdPrice, usdPer, closed, ts}}.
+async function refreshQuotes(conids, extraInst) {
+  const insts = conids.map((c) => (extraInst && String(extraInst.conid) === String(c)) ? extraInst : S.inst[String(c)]).filter(Boolean);
+  if (!insts.length) return {};
+  const q = await snapshot(insts.map((i) => i.conid + "@" + routeEx(i)));
+  const rates = await fxRates(insts.map((i) => i.ccy));
+  const out = {};
+  for (const i of insts) {
+    const v = q[i.conid + "@" + routeEx(i)];
+    if (!v) continue;
+    const usdPer = rates[major(i.ccy)] / minorDiv(i.ccy);
+    const rec = { conid: i.conid, symbol: i.symbol, ccy: i.ccy, price: v.price, usdPer, usdPrice: v.price * usdPer, closed: v.closed, ts: v.ts, fetchedAt: Date.now() };
+    out[String(i.conid)] = rec;
+    const prev = S.quotes[String(i.conid)];
+    if (canWrite() && S.inst[String(i.conid)] && (!prev || prev.price !== rec.price || prev.closed !== rec.closed || Date.now() - (prev.fetchedAt || 0) > 5 * 60e3)) {
+      await db.doc("quotes/" + i.conid).set(rec).catch(() => {});
+    }
+  }
+  return out;
+}
+function instFromRow(r, ccyOverride) {
+  return { conid: r.underlying_contract_id, symbol: r.symbol, desc: r.description || "", exchange: r.exchange, country: r.country_code || "",
+    ccy: ccyOverride || CC[r.country_code] || "USD" };
+}
+async function searchStocks(query) {
+  const p = await ib("search_contracts", { query });
+  return (p?.results || []).filter((r) => r.underlying_contract_id && r.exchange && r.exchange !== "CORPACT" && r.exchange !== "VALUE"
+    && (r.sections || []).some((s) => s.security_type === "STK"));
+}
+
+// ---------- order processing (runs in any viewer with IBKR) ----------
+async function processPending() {
+  if (busyFill || S.ibkr !== "ready" || !canWrite() || !cfg().startedAt) return;
+  busyFill = true;
+  try {
+    const pend = S.orders.filter((o) => o.status === "pending").sort((a, b) => a.createdAt - b.createdAt);
+    for (const o of pend) await fillOne(o.id).catch((e) => console.warn("fill", e));
+  } finally { busyFill = false; }
+}
+async function fillOne(id) {
+  const ref = db.doc("orders/" + id);
+  const lease = await ref.acquire({ holder: TAB, ttlMs: 60000 });
+  if (!lease.acquired) return;
+  const snap = await ref.get();
+  if (!snap.exists) return;
+  const o = Object.assign({ id }, snap.data());
+  if (o.status !== "pending") return;
+  const c = cfg();
+  const reject = (reason) => ref.update({ status: "rejected", reason, decidedAt: Date.now() });
+
+  // Resolve a ticker typed by a player without IBKR.
+  let inst = o.conid ? S.inst[String(o.conid)] : null;
+  if (!inst) {
+    const sym = String(o.lookupSymbol || "").trim().toUpperCase();
+    if (!o.conid && !sym) return reject("No instrument given");
+    if (o.conid) { // instrument doc missing: rebuild from order fields
+      inst = { conid: o.conid, symbol: o.symbol, desc: o.desc || "", exchange: o.exchange, country: o.country || "", ccy: o.ccy || "USD" };
+    } else {
+      const ex = String(o.lookupExchange || "").trim().toUpperCase();
+      const rows = (await searchStocks(sym)).filter((r) => String(r.symbol).toUpperCase() === sym);
+      let row = ex ? rows.find((r) => r.exchange.toUpperCase() === ex || (r.country_code || "").toUpperCase() === ex) : (rows.find((r) => r.country_code === "US") || rows[0]);
+      if (!row) return reject("Ticker " + sym + (ex ? " on " + ex : "") + " not found");
+      inst = instFromRow(row);
+    }
+    if (!S.inst[String(inst.conid)]) await db.doc("instruments/" + inst.conid).set(inst);
+    S.inst[String(inst.conid)] = inst;
+    await ref.update({ conid: inst.conid, symbol: inst.symbol, desc: inst.desc, exchange: inst.exchange, country: inst.country, ccy: inst.ccy });
+    o.conid = inst.conid; o.symbol = inst.symbol;
+  }
+
+  const before = replay(o.player, Date.now());
+  const conids = [...new Set([String(o.conid), ...Object.keys(before.pos)])];
+  const fresh = await refreshQuotes(conids, inst);
+  const q = fresh[String(o.conid)];
+  if (!q) { if (o.wait !== "no quote") await ref.update({ wait: "no quote" }); return; }
+  if (q.closed) { if (o.wait !== "market closed") await ref.update({ wait: "market closed" }); return; }
+  const v = value(o.player, Object.assign({}, S.quotes, fresh));
+  const P = v.total;
+  if (!(P > 0)) return reject("Portfolio value is not positive");
+  const held = v.pos[String(o.conid)];
+  const heldQty = held?.qty || 0, heldVal = held ? heldQty * q.usdPrice : 0;
+  let qty, amt;
+  if (o.side === "buy") {
+    amt = num(o.usdAmount);
+    if (!(amt > 0)) return reject("Amount must be above zero");
+    if (!held && Object.keys(v.pos).length >= c.maxHoldings) return reject("Already holding " + c.maxHoldings + " different stocks: sell one first");
+    if (amt > v.cash + 0.005) return reject("Not enough cash (" + usd(v.cash) + " available)");
+    const cap = c.maxPositionPct * P - heldVal;
+    if (amt > cap + 0.005) return reject("Over the " + Math.round(c.maxPositionPct * 100) + "% limit: max buy was " + usd(Math.max(0, cap)));
+    qty = amt / q.usdPrice;
+  } else {
+    qty = o.sellAll ? heldQty : num(o.qty);
+    if (!(qty > 0)) return reject(heldQty ? "Quantity must be above zero" : "You don't hold " + o.symbol);
+    if (qty > heldQty + 1e-9) return reject("You hold only " + qtyFmt(heldQty) + " " + o.symbol);
+    amt = qty * q.usdPrice;
+  }
+  await ref.update({ status: "filled", filledAt: Date.now(), qty, price: q.price, ccy: inst.ccy, usdPer: q.usdPer, usdPrice: q.usdPrice,
+    usdValue: amt, pct: amt / P, portfolioAtFill: P, wait: { __delete__: true } }).catch(() =>
+    ref.update({ status: "filled", filledAt: Date.now(), qty, price: q.price, ccy: inst.ccy, usdPer: q.usdPer, usdPrice: q.usdPrice, usdValue: amt, pct: amt / P, portfolioAtFill: P, wait: null }));
+}
+function canWrite() { return !!db && S.canWrite !== false; }
+
+// ---------- placing orders ----------
+async function placeOrder(side) {
+  const seat = mySeat();
+  if (!seat || !T.sel) return;
+  const inst = T.sel;
+  const o = { player: seat, uid: S.me, side, status: "pending", createdAt: Date.now() };
+  if (inst.conid) Object.assign(o, { conid: inst.conid, symbol: inst.symbol, desc: inst.desc, exchange: inst.exchange, country: inst.country, ccy: inst.ccy });
+  else Object.assign(o, { symbol: inst.symbol, lookupSymbol: inst.symbol, lookupExchange: inst.exchange || "" });
+  if (side === "buy") {
+    const amt = num($("amt")?.value);
+    if (!(amt > 0)) return setMsg("Enter a dollar amount to buy.", "err");
+    o.usdAmount = Math.round(amt * 100) / 100;
+  } else {
+    const all = $("sellall")?.checked;
+    const q = num($("sqty")?.value);
+    if (!all && !(q > 0)) return setMsg("Enter a quantity, or tick Sell all.", "err");
+    if (all) o.sellAll = true; else o.qty = q;
+  }
+  T.busy = true; renderTicket();
+  try {
+    if (inst.conid && !S.inst[String(inst.conid)]) await db.doc("instruments/" + inst.conid).set(inst);
+    const ref = await db.collection("orders").add(o);
+    if (S.ibkr === "ready") {
+      setMsg("Order sent. Filling at the live price…");
+      await fillOne(ref.id);
+      const d = (await ref.get()).data() || {};
+      if (d.status === "filled") setMsg((side === "buy" ? "Bought " : "Sold ") + qtyFmt(d.qty) + " " + d.symbol + " at " + usd(d.usdPrice) + " (" + usd(d.usdValue) + " total).", "ok");
+      else if (d.status === "rejected") setMsg("Rejected: " + d.reason, "err");
+      else setMsg("Queued: " + (d.wait === "market closed" ? "the market is closed, so it fills at the next open." : "waiting for a live price."));
+    } else setMsg("Order queued. It fills at the live price the next time a player with IBKR opens the page.");
+  } catch (e) {
+    setMsg(e?.code === "invalid_argument" ? "You can't place orders on this page. Ask the owner to share it with you as Contributor." : "Couldn't send the order: " + (e?.message || e), "err");
+  } finally { T.busy = false; renderTicket(); }
+}
+function setMsg(text, kind) { T.msg = { text, kind }; renderTicket(); }
+
+async function claimSeat(k) {
+  if (!S.me) return;
+  const ref = db.doc("seats/" + k);
+  try {
+    const l = await ref.acquire({ holder: S.me, ttlMs: 5000 });
+    if (!l.acquired) return;
+    const s = await ref.get();
+    if (s.exists && s.data()?.uid) return;
+    await ref.set({ uid: S.me, joinedAt: Date.now() });
+    const other = SEATS.find((x) => x !== k);
+    if (S.seats[other]?.uid && !cfg().startedAt) {
+      const c = await db.doc("game/config").get();
+      if (c.exists) await db.doc("game/config").update({ startedAt: Date.now() });
+      else await db.doc("game/config").set(Object.assign({}, DEFAULTS, { startedAt: Date.now() }));
+    }
+  } catch (e) { console.warn(e); }
+}
+
+// ---------- IBKR availability ----------
+function ibErr(e) {
+  const c = e?.code;
+  if (c === "needs_reauth") { S.ibkr = "reauth"; S.ibkrMsg = "Reconnect Interactive Brokers in claude.ai Settings → Connectors."; }
+  else if (c === "server_not_connected" || c === "selection_required" || c === "server_not_found") { S.ibkr = "none"; S.ibkrMsg = "Add Interactive Brokers in claude.ai Settings → Connectors to get live prices."; }
+  else if (c === "not_in_manifest" || c === "approval_required" || c === "blocked_by_policy" || c === "consent_required") { S.ibkr = "prompt"; S.ibkrMsg = "Live prices need your OK to use your IBKR connector on this page."; }
+  else { S.ibkrMsg = "IBKR didn't answer (" + (c || "error") + "). Try again in a minute."; }
+  renderStatus(); renderTicket();
+}
+async function enableIbkr() {
+  try {
+    await ib("search_contracts", { query: "SPY" });
+    S.ibkr = "ready"; S.ibkrMsg = "";
+    renderStatus(); renderTicket();
+    tick();
+  } catch (e) { ibErr(e); }
+}
+async function initIbkr() {
+  if (!mcp) { S.ibkr = "none"; S.ibkrMsg = "Live prices aren't available in this view."; return; }
+  try {
+    const lt = await mcp.listTools(CONN);
+    const srv = (lt?.servers || []).find((s) => s.server === CONN);
+    if (!srv || !(srv.tools || []).length) { S.ibkr = "none"; S.ibkrMsg = "Add Interactive Brokers in claude.ai Settings → Connectors to get live prices."; return; }
+    if (srv.authStatus === "needs_reauth") { S.ibkr = "reauth"; S.ibkrMsg = "Reconnect Interactive Brokers in claude.ai Settings → Connectors."; return; }
+    const st = perms ? await perms.state("mcp:" + CONN).catch(() => "unavailable") : "prompt";
+    if (st === "granted") { S.ibkr = "ready"; tick(); }
+    else { S.ibkr = "prompt"; S.ibkrMsg = "Turn on live prices to fill orders instantly."; }
+  } catch (e) { ibErr(e); }
+}
+async function tick() {
+  if (S.ibkr !== "ready" || document.hidden) return;
+  try {
+    const held = new Set();
+    for (const k of SEATS) for (const id of Object.keys(replay(k, Date.now()).pos)) held.add(id);
+    if (held.size) await refreshQuotes([...held]);
+    await processPending();
+  } catch (e) { if (e?.code) ibErr(e); else console.warn(e); }
+}
+
+// ---------- rendering ----------
+function renderStatus() {
+  const box = $("status"); box.replaceChildren();
+  const c = cfg();
+  if (!S.loaded) box.append(h("span", { class: "pill" + (S.slow ? " warn" : ""), text: S.slow ? "Can't reach the game data yet" : "Loading game…" }));
+  else if (c.startedAt) {
+    const wk = Math.floor((Date.now() - c.startedAt) / WEEK) + 1;
+    box.append(h("span", { class: "pill", text: "Week " + wk + " · started " + new Date(c.startedAt).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) }));
+  } else box.append(h("span", { class: "pill warn", text: "Waiting for two players" }));
+  const m = { ready: ["ok", "Live prices: IBKR"], prompt: ["warn", "Live prices off"], none: ["bad", "No IBKR connector"], reauth: ["bad", "IBKR needs reconnecting"], checking: ["", "Checking IBKR…"] }[S.ibkr] || ["", "IBKR"];
+  box.append(h("span", { class: "pill " + m[0] }, h("span", { class: "dot" }), m[1]));
+  if (S.ibkr === "prompt") box.append(h("button", { class: "primary", onclick: enableIbkr, text: "Turn on live prices" }));
+}
+async function names(ids) {
+  ids = ids.filter(Boolean);
+  if (!user || !ids.length) return {};
+  try { return await user.profiles(ids); } catch { return {}; }
+}
+async function renderBoard() {
+  const board = $("board");
+  const ids = SEATS.map((k) => S.seats[k]?.uid);
+  const ps = await names(ids);
+  const c = cfg();
+  const vals = {};
+  for (const k of SEATS) if (S.seats[k]?.uid) vals[k] = value(k);
+  const leader = vals.p1 && vals.p2 && c.startedAt ? (vals.p1.total > vals.p2.total ? "p1" : vals.p2.total > vals.p1.total ? "p2" : null) : null;
+  board.replaceChildren(...SEATS.map((k, i) => {
+    const seat = S.seats[k];
+    const lane = h("div", { class: "lane " + k });
+    if (!seat?.uid) {
+      const canJoin = S.loaded && S.me && !mySeat() && canWrite();
+      lane.append(h("div", { class: "who" }, h("span", { class: "tag", text: nm(k) }), h("span", { class: "nm muted", text: "Seat open" })),
+        h("div", { class: "big muted", text: usd(c.startCash) }),
+        h("p", { class: "muted", style: "margin:0" }, "Starts with " + usd(c.startCash) + " in cash."),
+        canJoin ? h("div", {}, h("button", { class: "primary", onclick: () => claimSeat(k), text: "Join as " + nm(k) })) :
+          h("p", { class: "muted", style: "margin:0;font-size:13px", text: mySeat() ? "Share this page with your opponent so they can join." : "Sign in with access to this page to join." }));
+      return lane;
+    }
+    const p = ps[seat.uid] || {};
+    const v = vals[k];
+    const ret = v.total / c.startCash - 1;
+    lane.append(h("div", { class: "who" }, p.avatarUrl ? h("img", { src: p.avatarUrl, alt: "" }) : null,
+      h("span", { class: "nm", text: nm(k) + (p.isMe ? " (you)" : "") }), p.name && p.name !== nm(k) ? h("span", { class: "muted", style: "font-size:13px", text: p.name }) : null));
+    if (leader === k) lane.append(h("span", { class: "pill ok leader", text: "Leading" }));
+    lane.append(h("div", {}, h("div", { class: "big", text: usd(v.total) }), h("div", { class: "ret " + (ret >= 0 ? "up" : "down"), text: pct(ret) + " since start" })));
+    lane.append(h("div", { class: "stats" },
+      h("div", {}, h("div", { class: "label", text: "Cash" }), h("div", { class: "num", text: usd(v.cash) })),
+      h("div", {}, h("div", { class: "label", text: "Invested" }), h("div", { class: "num", text: usd(v.invested) })),
+      h("div", {}, h("div", { class: "label", text: "Penalties" }), h("div", { class: "num" + (v.penaltyTotal ? " down" : ""), text: v.penaltyTotal ? "−" + usd(v.penaltyTotal) : "$0.00" }))));
+    if (c.startedAt) {
+      const cur = v.weeks[v.weeks.length - 1];
+      if (cur && cur.ok) lane.append(h("div", { class: "weekchip done", text: "This week's ≥" + Math.round(c.minWeeklyTradePct * 100) + "% trade is done." }));
+      else if (cur) lane.append(h("div", { class: "weekchip due", text: "Needs one trade of at least " + usd(c.minWeeklyTradePct * v.total) + " by " + day(cur.we) + ", or −" + usd(c.missedWeekPenalty) + "." }));
+    }
+    return lane;
+  }));
+}
+function renderHoldings() {
+  const box = $("holdings");
+  const c = cfg();
+  box.replaceChildren(...SEATS.map((k, i) => {
+    const panel = h("div", { class: "panel" }, h("h2", {}, h("span", { class: "sw", style: "background:var(--" + k + ")" }), nm(k) + "'s holdings"));
+    if (!S.seats[k]?.uid) { panel.append(h("div", { class: "empty", text: "No one in this seat yet." })); return panel; }
+    const v = value(k);
+    const rows = Object.values(v.pos).sort((a, b) => b.value - a.value);
+    if (!rows.length) { panel.append(h("div", { class: "empty", text: "All cash. Buy something from the order ticket." })); return panel; }
+    const t = h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Stock" }), h("th", { class: "n", text: "Qty" }), h("th", { class: "n", text: "Value" }), h("th", { class: "n", text: "Weight" }), h("th", { class: "n", text: "P&L" }))),
+      h("tbody", {}, rows.map((p) => {
+        const inst = S.inst[String(p.conid)] || {};
+        const pl = p.value - p.cost;
+        const w = v.total > 0 ? p.value / v.total : 0;
+        return h("tr", {}, h("td", {}, h("b", { class: "mono", text: p.symbol }), " ", h("span", { class: "muted", text: inst.exchange || "" })),
+          h("td", { class: "n", text: qtyFmt(p.qty) }), h("td", { class: "n", text: usd(p.value) }),
+          h("td", { class: "n" + (w > c.maxPositionPct ? " down" : ""), text: (w * 100).toFixed(1) + "%" }),
+          h("td", { class: "n " + (pl >= 0 ? "up" : "down"), text: (pl >= 0 ? "+" : "−") + usd(Math.abs(pl)).replace("-", "") }));
+      })));
+    panel.append(h("div", { class: "scroll" }, t));
+    return panel;
+  }));
+}
+function renderLog() {
+  const box = $("log");
+  const list = S.orders.slice().sort((a, b) => (b.filledAt || b.createdAt) - (a.filledAt || a.createdAt)).slice(0, 200);
+  $("logcount").textContent = S.orders.filter((o) => o.status === "filled").length + " fills";
+  if (!list.length) { box.replaceChildren(h("div", { class: "empty", text: "No trades yet. The first order shows up here for both players." })); return; }
+  const me = mySeat();
+  box.replaceChildren(h("table", {}, h("thead", {}, h("tr", {}, ["Time", "Player", "Side", "Stock", "Qty", "Price (USD)", "Value (USD)", "% of book", "Status"].map((x, i) => h("th", { class: i >= 4 && i <= 7 ? "n" : null, text: x })))),
+    h("tbody", {}, list.map((o) => {
+      const status = o.status === "pending" ? (o.wait === "market closed" ? "Pending · market closed" : "Pending") : o.status === "rejected" ? "Rejected · " + (o.reason || "") : o.status === "cancelled" ? "Cancelled" : "Filled";
+      return h("tr", {},
+        h("td", { class: "muted", text: dt(o.filledAt || o.createdAt) }),
+        h("td", {}, h("span", { class: "sw", style: "background:var(--" + (o.player === "p2" ? "p2" : "p1") + ")" }), nm(o.player === "p2" ? "p2" : "p1")),
+        h("td", { class: o.side === "buy" ? "side-b" : "side-s", text: o.side === "buy" ? "BUY" : "SELL" }),
+        h("td", {}, h("b", { class: "mono", text: o.symbol || o.lookupSymbol || "?" }), " ", h("span", { class: "muted", text: o.exchange || o.lookupExchange || "" })),
+        h("td", { class: "n", text: o.status === "filled" ? qtyFmt(o.qty) : o.sellAll ? "all" : o.qty ? qtyFmt(o.qty) : "—" }),
+        h("td", { class: "n", text: o.usdPrice != null ? usd(o.usdPrice) : "—" }),
+        h("td", { class: "n", text: o.status === "filled" ? usd(o.usdValue) : o.usdAmount ? usd(o.usdAmount) : "—" }),
+        h("td", { class: "n", text: o.pct != null ? (o.pct * 100).toFixed(1) + "%" : "—" }),
+        h("td", {}, h("span", { class: "st " + o.status, text: status }),
+          o.status === "pending" && o.player === me ? [" ", h("button", { class: "link", onclick: () => db.doc("orders/" + o.id).update({ status: "cancelled", decidedAt: Date.now() }).catch(() => {}), text: "Cancel" })] : null));
+    }))));
+}
+function renderRules() {
+  const c = cfg();
+  $("rules").replaceChildren(
+    h("div", {}, h("div", { class: "label", text: "Starting cash" }), h("b", { text: usd(c.startCash) }), " each. Everything is counted and shown in USD. Global stocks and ETFs, long only, fractional shares, no fees. Cash earns no interest."),
+    h("div", {}, h("div", { class: "label", text: "Diversification" }), "At most ", h("b", { text: String(c.maxHoldings) }), " different stocks held at once."),
+    h("div", {}, h("div", { class: "label", text: "Position cap" }), "A buy can't take one stock above ", h("b", { text: Math.round(c.maxPositionPct * 100) + "%" }), " of your portfolio value at that moment. It can drift higher afterwards."),
+    h("div", {}, h("div", { class: "label", text: "Weekly trade" }), "Each 7-day week from the start, make at least one buy or sell worth ", h("b", { text: Math.round(c.minWeeklyTradePct * 100) + "%" }), " of your portfolio. Miss it and ", h("b", { text: usd(c.missedWeekPenalty) }), " comes out of your cash."),
+    h("div", {}, h("div", { class: "label", text: "Scoring" }), "Total value in USD: cash plus holdings at the latest IBKR price and FX rate. Highest value leads."));
+}
+function renderTicket() {
+  const box = $("ticket");
+  const seat = mySeat();
+  const c = cfg();
+  const kids = [h("div", { class: "row", style: "justify-content:space-between" }, h("h2", { text: "Order ticket" }),
+    seat ? h("span", { class: "tag", style: "--pc:var(--" + seat + ");--pcs:var(--" + seat + "-soft)", text: "Trading as " + nm(seat) }) : null)];
+  if (!S.loaded) { box.replaceChildren(...kids, h("div", { class: "empty", text: "Loading…" })); return; }
+  if (!seat) { box.replaceChildren(...kids, h("div", { class: "empty", text: S.me ? "Join a seat on the scoreboard to trade." : "Open this page signed in to claude.ai to join and trade." })); return; }
+  if (!c.startedAt) { box.replaceChildren(...kids, h("div", { class: "empty", text: "Trading opens when the second player joins. Share this page with them as a Contributor." })); return; }
+  const v = value(seat);
+
+  if (S.ibkr === "ready" && !T.manual) {
+    const input = h("input", { id: "q", class: "grow", type: "search", placeholder: "Ticker or company, e.g. ASML, Shell, 7203", value: T.query, oninput: (e) => { T.query = e.target.value; } ,
+      onkeydown: (e) => { if (e.key === "Enter") doSearch(); } });
+    kids.push(h("div", { class: "row" }, h("div", { class: "field", style: "flex:1 1 260px" }, h("label", { class: "label", for: "q", text: "Find a stock or ETF" }), input),
+      h("button", { class: "primary", onclick: doSearch, disabled: T.searching, text: T.searching ? "Searching…" : "Search" })));
+    if (T.results && !T.sel) {
+      kids.push(T.results.length ? h("div", { class: "results" }, T.results.map((r) => h("button", { class: "res", onclick: () => pick(r) },
+        h("span", { class: "sym", text: r.symbol }), h("span", { class: "ds", text: r.description || "" }), h("span", { class: "muted mono", text: r.exchange + " · " + (r.country_code || "") }))))
+        : h("div", { class: "msg", text: "No listed stocks match that search." }));
+    }
+  } else {
+    kids.push(h("div", { class: "msg" }, S.ibkr === "ready" ? "Typing a ticker by hand." : (S.ibkrMsg || "Live prices are off.") + " You can still order by ticker; it fills at the live price when a player with IBKR opens the page."));
+    const sym = h("input", { id: "msym", placeholder: "SHEL", value: T.sel && !T.sel.conid ? T.sel.symbol : "" });
+    const ex = h("input", { id: "mex", placeholder: "LSE or GB (optional)", value: T.sel && !T.sel.conid ? T.sel.exchange : "" });
+    kids.push(h("div", { class: "row" }, h("div", { class: "field" }, h("label", { class: "label", for: "msym", text: "Ticker" }), sym),
+      h("div", { class: "field" }, h("label", { class: "label", for: "mex", text: "Exchange or country" }), ex),
+      h("button", { onclick: () => { const s = $("msym").value.trim().toUpperCase(); if (!s) return; T.sel = { symbol: s, exchange: $("mex").value.trim().toUpperCase() }; T.quote = null; T.msg = null; renderTicket(); }, text: "Use ticker" }),
+      S.ibkr === "ready" ? h("button", { class: "link", onclick: () => { T.manual = false; T.sel = null; renderTicket(); }, text: "Back to search" }) : null));
+  }
+
+  // holdings quick-picks for selling
+  const held = Object.values(v.pos);
+  if (held.length && !T.sel) kids.push(h("div", { class: "row" }, h("span", { class: "label", text: "Your holdings" }),
+    held.map((p) => h("button", { onclick: () => { const i = S.inst[String(p.conid)]; if (i) { T.sel = i; T.quote = null; T.msg = null; renderTicket(); loadQuote(); } }, text: p.symbol }))));
+
+  if (T.sel) {
+    const inst = T.sel;
+    const known = inst.conid && S.inst[String(inst.conid)];
+    const pos = inst.conid ? v.pos[String(inst.conid)] : null;
+    const q = T.quote || (inst.conid ? S.quotes[String(inst.conid)] : null);
+    const usdPx = num(q?.usdPrice);
+    const cur = pos && usdPx ? pos.qty * usdPx : 0;
+    const maxBuy = Math.max(0, Math.min(v.cash, c.maxPositionPct * (v.cash + v.invested - (pos ? pos.value : 0) + cur) - cur));
+    const ccySel = inst.conid && !known
+      ? h("select", { id: "ccy", onchange: (e) => { T.sel = Object.assign({}, T.sel, { ccy: e.target.value }); T.quote = null; renderTicket(); loadQuote(); } },
+          CCY_LIST.map((x) => { const o = h("option", { value: x, text: x }); if (x === inst.ccy) o.selected = true; return o; }))
+      : null;
+    kids.push(h("div", { class: "sel" },
+      h("div", { class: "head" },
+        h("div", {}, h("b", { class: "mono", style: "font-size:18px", text: inst.symbol }), " ", h("span", { class: "muted", text: [inst.exchange, inst.country].filter(Boolean).join(" · ") }),
+          h("div", { class: "muted", style: "font-size:13px", text: inst.desc || (inst.conid ? "" : "Resolved by IBKR at fill time") })),
+        h("div", { style: "text-align:right" },
+          q ? h("div", { class: "px", text: usd(usdPx) }) : h("div", { class: "muted", text: inst.conid ? (S.ibkr === "ready" ? "Getting price…" : "No live price") : "" }),
+          q && q.closed ? h("div", { class: "muted", style: "font-size:13px", text: "Market closed: orders fill at the next open" }) : null)),
+      inst.conid ? h("div", { class: "row" }, h("span", { class: "label", text: "Quote currency" }),
+        ccySel || h("span", { class: "mono", text: inst.ccy }),
+        ccySel ? h("span", { class: "muted", style: "font-size:13px", text: "Guessed from the listing. London quotes are usually GBX (pence); some LSE ETFs trade in USD. Locked after the first trade." }) : null) : null,
+      h("div", { class: "sides" },
+        h("div", { class: "side" }, h("label", { class: "label", for: "amt", text: "Buy, in USD" }),
+          h("input", { id: "amt", type: "number", min: "0", step: "0.01", inputmode: "decimal", placeholder: usdPx ? maxBuy.toFixed(2) : "1000" }),
+          h("div", { class: "muted", style: "font-size:13px", text: (!pos && Object.keys(v.pos).length >= c.maxHoldings) ? "You already hold " + c.maxHoldings + " different stocks. Sell one to buy a new one." : usdPx ? "Max " + usd(maxBuy) + " (cash " + usd(v.cash) + ", " + Math.round(c.maxPositionPct * 100) + "% cap)." : "Cash " + usd(v.cash) + ". The " + Math.round(c.maxPositionPct * 100) + "% cap is checked at fill." }),
+          h("button", { class: "buy", disabled: T.busy, onclick: () => placeOrder("buy"), text: "Buy " + inst.symbol })),
+        h("div", { class: "side" }, h("label", { class: "label", for: "sqty", text: "Sell, in shares" }),
+          h("div", { class: "row" }, h("input", { id: "sqty", type: "number", min: "0", step: "any", inputmode: "decimal", placeholder: pos ? qtyFmt(pos.qty) : "0", style: "flex:1 1 100px" }),
+            h("label", { style: "display:flex;gap:6px;align-items:center" }, h("input", { id: "sellall", type: "checkbox" }), "Sell all")),
+          h("div", { class: "muted", style: "font-size:13px", text: pos ? "You hold " + qtyFmt(pos.qty) + " (" + usd(pos.value) + ")." : "You don't hold this." }),
+          h("button", { class: "sell", disabled: T.busy || (inst.conid && !pos), onclick: () => placeOrder("sell"), text: "Sell " + inst.symbol }))),
+      h("div", {}, h("button", { class: "link", onclick: () => { T.sel = null; T.quote = null; T.msg = null; renderTicket(); }, text: "Pick a different stock" }))));
+  }
+  if (S.ibkr === "ready" && !T.manual && !T.sel) kids.push(h("div", {}, h("button", { class: "link", onclick: () => { T.manual = true; renderTicket(); }, text: "Can't find it? Type a ticker by hand" })));
+  if (T.msg) kids.push(h("div", { class: "msg " + (T.msg.kind || ""), role: "status", text: T.msg.text }));
+  // keep typed values across re-render
+  const keep = ["amt", "sqty", "msym", "mex"].map((id) => [id, $(id)?.value]);
+  const sa = $("sellall")?.checked;
+  const focused = document.activeElement?.id;
+  box.replaceChildren(...kids);
+  for (const [id, val] of keep) if (val && $(id)) $(id).value = val;
+  if (sa && $("sellall")) $("sellall").checked = true;
+  if (focused && $(focused)) $(focused).focus();
+}
+async function doSearch() {
+  const q = (T.query || "").trim();
+  if (!q) return;
+  T.searching = true; T.sel = null; T.msg = null; renderTicket();
+  try { T.results = await searchStocks(q); }
+  catch (e) { T.results = null; if (e?.code) ibErr(e); setMsg("Search failed: " + (e?.message || e), "err"); }
+  finally { T.searching = false; renderTicket(); }
+}
+function pick(r) {
+  const known = S.inst[String(r.underlying_contract_id)];
+  T.sel = known || instFromRow(r);
+  T.quote = null; T.msg = null; renderTicket(); loadQuote();
+}
+async function loadQuote() {
+  const inst = T.sel;
+  if (!inst?.conid || S.ibkr !== "ready") return;
+  try {
+    const fresh = await refreshQuotes([inst.conid], inst);
+    if (T.sel === inst) { T.quote = fresh[String(inst.conid)] || null; if (!T.quote) setMsg("IBKR returned no price for this listing. Try another exchange.", "err"); renderTicket(); }
+  } catch (e) { if (e?.code) ibErr(e); else setMsg(String(e?.message || e), "err"); }
+}
+
+let rafPending = false;
+function renderAll() {
+  if (rafPending) return; rafPending = true;
+  requestAnimationFrame(() => { rafPending = false; renderStatus(); renderBoard(); renderHoldings(); renderLog(); renderRules(); renderTicket(); });
+}
+
+function route() {
+  const v = location.hash === "#orders" ? "orders" : "standings";
+  for (const x of ["standings", "orders"]) { $("view-" + x).hidden = x !== v; $("tab-" + x).setAttribute("aria-selected", String(x === v)); }
+}
+window.addEventListener("hashchange", route);
+route();
+
+// ---------- boot ----------
+async function boot() {
+  renderAll();
+  const C = window.claude;
+  if (!C?.use) { S.slow = true; renderStatus(); $("board").replaceChildren(h("div", { class: "lane", text: "Open this page on claude.ai to play." })); return; }
+  [db, user, mcp, perms] = await Promise.all(["db", "user", "mcp", "permissions"].map((n) => C.use(n).catch(() => null)));
+  if (!db) { S.slow = true; S.loaded = false; renderAll(); $("board").replaceChildren(h("div", { class: "lane", text: "Sign in to claude.ai to see the game." })); return; }
+  if (user) { S.me = await user.id().catch(() => null); S.canWrite = await user.can("data.write").catch(() => null); }
+  const timer = setTimeout(() => { if (!S.loaded) { S.slow = true; renderStatus(); } }, 10000);
+  let got = { cfg: false, seats: false, orders: false };
+  const done = (k, snap) => { if (!snap.metadata.fromCache) got[k] = true; if (got.cfg && got.seats && got.orders && !S.loaded) { S.loaded = true; clearTimeout(timer); } renderAll(); };
+  const fail = (e) => { console.warn(e); clearTimeout(timer); S.slow = true; renderStatus(); };
+  db.doc("game/config").onSnapshot((s) => { S.cfg = s.exists ? s.data() : null; done("cfg", s); }, fail);
+  db.collection("seats").onSnapshot((s) => { S.seats = {}; for (const d of s.docs) S.seats[d.id] = d.data(); done("seats", s); }, fail);
+  let pendTimer = null;
+  db.collection("orders").onSnapshot((s) => {
+    S.orders = s.docs.map((d) => Object.assign({ id: d.id }, d.data()));
+    done("orders", s);
+    if (S.orders.some((o) => o.status === "pending")) { clearTimeout(pendTimer); pendTimer = setTimeout(processPending, 1500); }
+  }, fail);
+  db.collection("quotes").onSnapshot((s) => { S.quotes = {}; for (const d of s.docs) S.quotes[d.id] = d.data(); renderAll(); }, fail);
+  db.collection("fx").onSnapshot((s) => { S.fx = {}; for (const d of s.docs) S.fx[d.id] = d.data(); }, fail);
+  db.collection("instruments").onSnapshot((s) => { S.inst = {}; for (const d of s.docs) S.inst[d.id] = d.data(); renderAll(); }, fail);
+  await initIbkr();
+  renderAll();
+  setInterval(tick, 60000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+}
+boot();
+})();
+</script>
