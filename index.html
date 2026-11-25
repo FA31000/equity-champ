@@ -378,13 +378,13 @@ async function fillOne(id) {
   const heldQty = held?.qty || 0, heldVal = held ? heldQty * q.usdPrice : 0;
   let qty, amt;
   if (o.side === "buy") {
-    amt = num(o.usdAmount);
+    amt = num(o.buyQty) ? o.buyQty * q.usdPrice : num(o.usdAmount);
     if (!(amt > 0)) return reject("Amount must be above zero");
     if (!held && Object.keys(v.pos).length >= c.maxHoldings) return reject("Already holding " + c.maxHoldings + " different stocks: sell one first");
     if (amt > v.cash + 0.005) return reject("Not enough cash (" + usd(v.cash) + " available)");
     const cap = c.maxPositionPct * P - heldVal;
     if (amt > cap + 0.005) return reject("Over the " + Math.round(c.maxPositionPct * 100) + "% limit: max buy was " + usd(Math.max(0, cap)));
-    qty = amt / q.usdPrice;
+    qty = num(o.buyQty) || amt / q.usdPrice;
   } else {
     qty = o.sellAll ? heldQty : num(o.qty);
     if (!(qty > 0)) return reject(heldQty ? "Quantity must be above zero" : "You don't hold " + o.symbol);
@@ -407,8 +407,9 @@ async function placeOrder(side) {
   else Object.assign(o, { symbol: inst.symbol, lookupSymbol: inst.symbol, lookupExchange: inst.exchange || "" });
   if (side === "buy") {
     const amt = num($("amt")?.value);
-    if (!(amt > 0)) return setMsg("Enter a dollar amount to buy.", "err");
-    o.usdAmount = Math.round(amt * 100) / 100;
+    const inShares = $("bunit")?.value === "shares";
+    if (!(amt > 0)) return setMsg(inShares ? "Enter how many shares to buy." : "Enter a dollar amount to buy.", "err");
+    if (inShares) o.buyQty = amt; else o.usdAmount = Math.round(amt * 100) / 100;
   } else {
     const all = $("sellall")?.checked;
     const q = num($("sqty")?.value);
@@ -583,7 +584,7 @@ function renderLog() {
         h("td", {}, h("span", { class: "sw", style: "background:var(--" + (o.player === "p2" ? "p2" : "p1") + ")" }), nm(o.player === "p2" ? "p2" : "p1")),
         h("td", { class: o.side === "buy" ? "side-b" : "side-s", text: o.side === "buy" ? "BUY" : "SELL" }),
         h("td", {}, h("b", { class: "mono", text: o.symbol || o.lookupSymbol || "?" }), " ", h("span", { class: "muted", text: o.exchange || o.lookupExchange || "" })),
-        h("td", { class: "n", text: o.status === "filled" ? qtyFmt(o.qty) : o.sellAll ? "all" : o.qty ? qtyFmt(o.qty) : "—" }),
+        h("td", { class: "n", text: o.status === "filled" ? qtyFmt(o.qty) : o.sellAll ? "all" : o.buyQty ? qtyFmt(o.buyQty) : o.qty ? qtyFmt(o.qty) : "—" }),
         h("td", { class: "n", text: o.usdPrice != null ? usd(o.usdPrice) : "—" }),
         h("td", { class: "n", text: o.status === "filled" ? usd(o.usdValue) : o.usdAmount ? usd(o.usdAmount) : "—" }),
         h("td", { class: "n", text: o.pct != null ? (o.pct * 100).toFixed(1) + "%" : "—" }),
@@ -659,8 +660,10 @@ function renderTicket() {
         ccySel || h("span", { class: "mono", text: inst.ccy }),
         ccySel ? h("span", { class: "muted", style: "font-size:13px", text: "Guessed from the listing. London quotes are usually GBX (pence); some LSE ETFs trade in USD. Locked after the first trade." }) : null) : null,
       h("div", { class: "sides" },
-        h("div", { class: "side" }, h("label", { class: "label", for: "amt", text: "Buy, in USD" }),
-          h("input", { id: "amt", type: "number", min: "0", step: "0.01", inputmode: "decimal", placeholder: usdPx ? maxBuy.toFixed(2) : "1000" }),
+        h("div", { class: "side" }, h("label", { class: "label", for: "amt", text: "Buy" }),
+          h("div", { class: "row" }, h("input", { id: "amt", type: "number", min: "0", step: "any", inputmode: "decimal", placeholder: "Amount", style: "flex:1 1 100px", oninput: buyPreview }),
+            h("select", { id: "bunit", "aria-label": "Buy in", onchange: buyPreview }, h("option", { value: "usd", text: "USD" }), h("option", { value: "shares", text: "shares" }))),
+          h("div", { id: "bprev", class: "muted mono", style: "font-size:13px;min-height:1.2em" }),
           h("div", { class: "muted", style: "font-size:13px", text: (!pos && Object.keys(v.pos).length >= c.maxHoldings) ? "You already hold " + c.maxHoldings + " different stocks. Sell one to buy a new one." : usdPx ? "Max " + usd(maxBuy) + " (cash " + usd(v.cash) + ", " + Math.round(c.maxPositionPct * 100) + "% cap)." : "Cash " + usd(v.cash) + ". The " + Math.round(c.maxPositionPct * 100) + "% cap is checked at fill." }),
           h("button", { class: "buy", disabled: T.busy, onclick: () => placeOrder("buy"), text: "Buy " + inst.symbol })),
         h("div", { class: "side" }, h("label", { class: "label", for: "sqty", text: "Sell, in shares" }),
@@ -673,13 +676,22 @@ function renderTicket() {
   if (S.ibkr === "ready" && !T.manual && !T.sel) kids.push(h("div", {}, h("button", { class: "link", onclick: () => { T.manual = true; renderTicket(); }, text: "Can't find it? Type a ticker by hand" })));
   if (T.msg) kids.push(h("div", { class: "msg " + (T.msg.kind || ""), role: "status", text: T.msg.text }));
   // keep typed values across re-render
-  const keep = ["amt", "sqty", "msym", "mex"].map((id) => [id, $(id)?.value]);
+  const keep = ["bunit", "amt", "sqty", "msym", "mex"].map((id) => [id, $(id)?.value]);
   const sa = $("sellall")?.checked;
   const focused = document.activeElement?.id;
   box.replaceChildren(...kids);
   for (const [id, val] of keep) if (val && $(id)) $(id).value = val;
   if (sa && $("sellall")) $("sellall").checked = true;
   if (focused && $(focused)) $(focused).focus();
+  buyPreview();
+}
+function buyPreview() {
+  const out = $("bprev"), a = num($("amt")?.value);
+  if (!out) return;
+  const q = T.quote || (T.sel?.conid ? S.quotes[String(T.sel.conid)] : null);
+  const px = num(q?.usdPrice);
+  if (!a || !px) { out.textContent = ""; return; }
+  out.textContent = $("bunit")?.value === "shares" ? "≈ " + usd(a * px) + " at " + usd(px) : "≈ " + qtyFmt(a / px) + " shares at " + usd(px);
 }
 async function doSearch() {
   const q = (T.query || "").trim();
