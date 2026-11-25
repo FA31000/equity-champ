@@ -217,17 +217,18 @@ function replay(seat, upTo) {
     .concat(weeks.filter((w) => w.closed && !w.ok).map((w) => ({ t: w.we, pen: c.missedWeekPenalty, w })))
     .sort((a, b) => a.t - b.t);
   let penaltyTotal = 0;
+  const realized = {};
   for (const ev of events) {
     if (ev.t > upTo) break;
     if (ev.pen) { cash -= ev.pen; penaltyTotal += ev.pen; continue; }
     const o = ev.o, id = String(o.conid);
     const p = pos[id] || (pos[id] = { conid: o.conid, symbol: o.symbol, qty: 0, cost: 0, lastUsd: null });
     if (o.side === "buy") { cash -= o.usdValue; p.qty += o.qty; p.cost += o.usdValue; }
-    else { const frac = p.qty > 0 ? Math.min(1, o.qty / p.qty) : 1; p.cost -= p.cost * frac; p.qty -= o.qty; cash += o.usdValue; }
+    else { realized[o.id] = o.usdValue - (p.qty > 0 ? p.cost / p.qty : 0) * o.qty; const frac = p.qty > 0 ? Math.min(1, o.qty / p.qty) : 1; p.cost -= p.cost * frac; p.qty -= o.qty; cash += o.usdValue; }
     p.lastUsd = o.usdPrice;
     if (p.qty < 1e-9) delete pos[id];
   }
-  return { cash, pos, weeks, penaltyTotal };
+  return { cash, pos, weeks, penaltyTotal, realized };
 }
 function value(seat, quoteMap) {
   const r = replay(seat, Date.now());
@@ -589,7 +590,20 @@ function renderLog() {
   $("logcount").textContent = S.orders.filter((o) => o.status === "filled").length + " fills";
   if (!list.length) { box.replaceChildren(h("div", { class: "empty", text: "No trades yet. The first order shows up here for both players." })); return; }
   const me = mySeat();
-  box.replaceChildren(h("table", {}, h("thead", {}, h("tr", {}, ["Time", "Player", "Side", "Stock", "Qty", "Price (USD)", "Value (USD)", "% of book", "Status"].map((x, i) => h("th", { class: i >= 4 && i <= 7 ? "n" : null, text: x })))),
+  const rz = Object.assign({}, ...SEATS.map((k) => replay(k, Date.now()).realized));
+  const gainCells = (o) => {
+    let now = null, g = null, gp = null;
+    if (o.status === "filled") {
+      now = num(S.quotes[String(o.conid)]?.usdPrice);
+      if (o.side === "buy" && now != null) { g = (now - o.usdPrice) * o.qty; gp = now / o.usdPrice - 1; }
+      else if (o.side === "sell" && rz[o.id] != null) { g = rz[o.id]; const basis = o.usdValue - g; gp = basis > 0 ? g / basis : null; }
+    }
+    const cls = g == null ? "n" : "n " + (g >= 0 ? "up" : "down");
+    return [h("td", { class: "n", text: now != null ? usd(now) : "—" }),
+      h("td", { class: cls, title: o.side === "sell" ? "Realized vs. average cost" : "Unrealized on this lot", text: g == null ? "—" : (g >= 0 ? "+" : "−") + usd(Math.abs(g)) }),
+      h("td", { class: cls, text: gp == null ? "—" : pct(gp) })];
+  };
+  box.replaceChildren(h("table", {}, h("thead", {}, h("tr", {}, ["Time", "Player", "Side", "Stock", "Qty", "Paid (USD)", "Value (USD)", "Now (USD)", "Gain", "Gain %", "% of book", "Status"].map((x, i) => h("th", { class: i >= 4 && i <= 10 ? "n" : null, text: x })))),
     h("tbody", {}, list.map((o) => {
       const status = o.status === "pending" ? (o.wait === "market closed" ? "Pending · market closed" : "Pending") : o.status === "rejected" ? "Rejected · " + (o.reason || "") : o.status === "cancelled" ? "Cancelled" : o.status === "voided" ? "Undone " + dt(o.decidedAt) : "Filled";
       const canUndo = o.status === "filled" && o.player === me && Date.now() - o.filledAt < UNDO_MS;
@@ -601,6 +615,7 @@ function renderLog() {
         h("td", { class: "n", text: o.status === "filled" ? qtyFmt(o.qty) : o.sellAll ? "all" : o.buyQty ? qtyFmt(o.buyQty) : o.qty ? qtyFmt(o.qty) : "—" }),
         h("td", { class: "n", text: o.usdPrice != null ? usd(o.usdPrice) : "—" }),
         h("td", { class: "n", text: o.status === "filled" ? usd(o.usdValue) : o.usdAmount ? usd(o.usdAmount) : "—" }),
+        gainCells(o),
         h("td", { class: "n", text: o.pct != null ? (o.pct * 100).toFixed(1) + "%" : "—" }),
         h("td", {}, h("span", { class: "st " + o.status, text: status }),
           o.status === "pending" && o.player === me ? [" ", h("button", { class: "link", onclick: () => db.doc("orders/" + o.id).update({ status: "cancelled", decidedAt: Date.now() }).catch(() => {}), text: "Cancel" })] : null,
