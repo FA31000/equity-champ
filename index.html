@@ -442,8 +442,7 @@ async function claimSeat(k) {
     const s = await ref.get();
     if (s.exists && s.data()?.uid) return;
     await ref.set({ uid: S.me, joinedAt: Date.now() });
-    const other = SEATS.find((x) => x !== k);
-    if (S.seats[other]?.uid && !cfg().startedAt) {
+    if (!cfg().startedAt) {
       const c = await db.doc("game/config").get();
       if (c.exists) await db.doc("game/config").update({ startedAt: Date.now() });
       else await db.doc("game/config").set(Object.assign({}, DEFAULTS, { startedAt: Date.now() }));
@@ -609,7 +608,7 @@ function renderTicket() {
     seat ? h("span", { class: "tag", style: "--pc:var(--" + seat + ");--pcs:var(--" + seat + "-soft)", text: "Trading as " + nm(seat) }) : null)];
   if (!S.loaded) { box.replaceChildren(...kids, h("div", { class: "empty", text: "Loading…" })); return; }
   if (!seat) { box.replaceChildren(...kids, h("div", { class: "empty", text: S.me ? "Join a seat on the scoreboard to trade." : "Open this page signed in to claude.ai to join and trade." })); return; }
-  if (!c.startedAt) { box.replaceChildren(...kids, h("div", { class: "empty", text: "Trading opens when the second player joins. Share this page with them as a Contributor." })); return; }
+  if (!c.startedAt) { box.replaceChildren(...kids, h("div", { class: "empty", text: "Trading opens when the first player joins." })); return; }
   const v = value(seat);
 
   if (S.ibkr === "ready" && !T.manual) {
