@@ -92,7 +92,9 @@ td.n, th.n { text-align: right }
 tr:last-child td { border-bottom: none }
 .side-b { color: var(--up); font-weight: 700 } .side-s { color: var(--down); font-weight: 700 }
 .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px }
-.st { font-size: 12px; font-weight: 600 } .st.pending { color: var(--warn) } .st.rejected, .st.cancelled { color: var(--muted) }
+.st { font-size: 12px; font-weight: 600 } .st.pending { color: var(--warn) } .st.rejected, .st.cancelled, .st.voided { color: var(--muted) }
+tr.voided td { text-decoration: line-through; text-decoration-color: var(--muted) }
+tr.voided td:last-child { text-decoration: none }
 .empty { padding: 18px; text-align: center; color: var(--muted); font-size: 14px }
 .view { display: grid; gap: 28px }
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: -12px }
@@ -147,6 +149,8 @@ tr:last-child td { border-bottom: none }
 const CONN = "Interactive Brokers (IBKR)";
 const WEEK = 7 * 864e5;
 const STALE_MS = 30 * 60e3;
+const UNDO_MS = 15 * 60e3;
+let confirmUndo = null;
 const DEFAULTS = { startCash: 10000, maxPositionPct: 0.25, minWeeklyTradePct: 0.10, missedWeekPenalty: 100, maxHoldings: 10, startedAt: null, names: { p1: "FA", p2: "Louis" } };
 const SEATS = ["p1", "p2"];
 const TAB = Math.random().toString(36).slice(2);
@@ -578,8 +582,9 @@ function renderLog() {
   const me = mySeat();
   box.replaceChildren(h("table", {}, h("thead", {}, h("tr", {}, ["Time", "Player", "Side", "Stock", "Qty", "Price (USD)", "Value (USD)", "% of book", "Status"].map((x, i) => h("th", { class: i >= 4 && i <= 7 ? "n" : null, text: x })))),
     h("tbody", {}, list.map((o) => {
-      const status = o.status === "pending" ? (o.wait === "market closed" ? "Pending · market closed" : "Pending") : o.status === "rejected" ? "Rejected · " + (o.reason || "") : o.status === "cancelled" ? "Cancelled" : "Filled";
-      return h("tr", {},
+      const status = o.status === "pending" ? (o.wait === "market closed" ? "Pending · market closed" : "Pending") : o.status === "rejected" ? "Rejected · " + (o.reason || "") : o.status === "cancelled" ? "Cancelled" : o.status === "voided" ? "Undone " + dt(o.decidedAt) : "Filled";
+      const canUndo = o.status === "filled" && o.player === me && Date.now() - o.filledAt < UNDO_MS;
+      return h("tr", { class: o.status === "voided" ? "voided" : null },
         h("td", { class: "muted", text: dt(o.filledAt || o.createdAt) }),
         h("td", {}, h("span", { class: "sw", style: "background:var(--" + (o.player === "p2" ? "p2" : "p1") + ")" }), nm(o.player === "p2" ? "p2" : "p1")),
         h("td", { class: o.side === "buy" ? "side-b" : "side-s", text: o.side === "buy" ? "BUY" : "SELL" }),
@@ -589,7 +594,10 @@ function renderLog() {
         h("td", { class: "n", text: o.status === "filled" ? usd(o.usdValue) : o.usdAmount ? usd(o.usdAmount) : "—" }),
         h("td", { class: "n", text: o.pct != null ? (o.pct * 100).toFixed(1) + "%" : "—" }),
         h("td", {}, h("span", { class: "st " + o.status, text: status }),
-          o.status === "pending" && o.player === me ? [" ", h("button", { class: "link", onclick: () => db.doc("orders/" + o.id).update({ status: "cancelled", decidedAt: Date.now() }).catch(() => {}), text: "Cancel" })] : null));
+          o.status === "pending" && o.player === me ? [" ", h("button", { class: "link", onclick: () => db.doc("orders/" + o.id).update({ status: "cancelled", decidedAt: Date.now() }).catch(() => {}), text: "Cancel" })] : null,
+          canUndo ? [" ", confirmUndo === o.id
+            ? h("button", { class: "link", style: "color:var(--down)", onclick: () => { confirmUndo = null; db.doc("orders/" + o.id).update({ status: "voided", decidedAt: Date.now() }).catch(() => {}); }, text: "Confirm undo" })
+            : h("button", { class: "link", title: "Undo is open for 15 minutes after the fill", onclick: () => { confirmUndo = o.id; renderLog(); setTimeout(() => { if (confirmUndo === o.id) { confirmUndo = null; renderLog(); } }, 8000); }, text: "Undo" })] : null));
     }))));
 }
 function renderRules() {
@@ -599,7 +607,8 @@ function renderRules() {
     h("div", {}, h("div", { class: "label", text: "Diversification" }), "At most ", h("b", { text: String(c.maxHoldings) }), " different stocks held at once."),
     h("div", {}, h("div", { class: "label", text: "Position cap" }), "A buy can't take one stock above ", h("b", { text: Math.round(c.maxPositionPct * 100) + "%" }), " of your portfolio value at that moment. It can drift higher afterwards."),
     h("div", {}, h("div", { class: "label", text: "Weekly trade" }), "Each 7-day week from the start, make at least one buy or sell worth ", h("b", { text: Math.round(c.minWeeklyTradePct * 100) + "%" }), " of your portfolio. Miss it and ", h("b", { text: usd(c.missedWeekPenalty) }), " comes out of your cash."),
-    h("div", {}, h("div", { class: "label", text: "Scoring" }), "Total value in USD: cash plus holdings at the latest IBKR price and FX rate. Highest value leads."));
+    h("div", {}, h("div", { class: "label", text: "Scoring" }), "Total value in USD: cash plus holdings at the latest IBKR price and FX rate. Highest value leads."),
+    h("div", {}, h("div", { class: "label", text: "Mistakes" }), "Cancel a pending order anytime. Undo a filled order within ", h("b", { text: "15 min" }), ". Undone trades stay visible on the order list."));
 }
 function renderTicket() {
   const box = $("ticket");
