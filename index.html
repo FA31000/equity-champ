@@ -15,11 +15,11 @@
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   --bg: #0e1311; --surface: #161d1a; --sunk: #111714; --ink: #e5ece8; --muted: #8fa098; --line: #28322e;
-  --p1: #86a3ff; --p1-soft: #1b2440; --p2: #f39a63; --p2-soft: #3a2418;
+  --p1: #7393f5; --p1-soft: #1b2440; --p2: #e07a3c; --p2-soft: #3a2418;
   --up: #43cf97; --down: #ff7d70; --warn: #f2c14e; --warn-soft: #33290f; --focus: #86a3ff; color-scheme: dark } }
 :root[data-theme="dark"] {
   --bg: #0e1311; --surface: #161d1a; --sunk: #111714; --ink: #e5ece8; --muted: #8fa098; --line: #28322e;
-  --p1: #86a3ff; --p1-soft: #1b2440; --p2: #f39a63; --p2-soft: #3a2418;
+  --p1: #7393f5; --p1-soft: #1b2440; --p2: #e07a3c; --p2-soft: #3a2418;
   --up: #43cf97; --down: #ff7d70; --warn: #f2c14e; --warn-soft: #33290f; --focus: #86a3ff; color-scheme: dark }
 * { box-sizing: border-box }
 body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.5 }
@@ -103,6 +103,17 @@ tr.voided td:last-child { text-decoration: none }
 .chip { padding: 6px 14px; border-radius: 999px; font-size: 13px; background: var(--bg) }
 .chip[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink) }
 .toggle { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); margin-left: auto }
+.chart { position: relative; min-width: 0 }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y }
+.chart .grid { stroke: var(--line); stroke-width: 1 }
+.chart .base { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 4 }
+.chart .ax { fill: var(--muted); font: 11px var(--f-mono) }
+.chart .lbl { fill: var(--ink); font: 600 12px var(--f-body) }
+.chart .xh { stroke: var(--muted); stroke-width: 1 }
+.tip { position: absolute; top: 0; pointer-events: none; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; box-shadow: 0 4px 14px rgba(0,0,0,.12); white-space: nowrap; display: grid; gap: 2px }
+.legend { display: flex; gap: 14px; font-size: 13px }
+.legend span { display: inline-flex; align-items: center; gap: 6px }
+.legend i { width: 14px; height: 2px; border-radius: 2px; display: inline-block }
 .rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px }
 .rules div { font-size: 14px } .rules b { font-family: var(--f-mono) }
 
@@ -129,6 +140,11 @@ tr.voided td:last-child { text-decoration: none }
 
   <div class="view" id="view-standings">
   <section class="board" id="board" aria-label="Scoreboard"></section>
+  <section class="panel" aria-label="Performance">
+    <div class="row" style="justify-content:space-between"><h2>Performance</h2><div class="legend" id="legend"></div></div>
+    <div class="chart" id="chart"></div>
+    <div class="muted" id="chartnote" style="font-size:13px"></div>
+  </section>
   <section class="tables" id="holdings" aria-label="Holdings"></section>
   <section class="panel" aria-label="Rules">
     <h2>Rules</h2>
@@ -499,12 +515,153 @@ async function initIbkr() {
     else { S.ibkr = "prompt"; S.ibkrMsg = "Turn on live prices to fill orders instantly."; }
   } catch (e) { ibErr(e); }
 }
+// ---------- performance history ----------
+const HIST_STEPS = [[864e5, "FIVE_MINS", 5 * 60e3], [5 * 864e5, "THIRTY_MINS", 30 * 60e3], [14 * 864e5, "ONE_HOUR", 36e5], [60 * 864e5, "FOUR_HOURS", 4 * 36e5], [Infinity, "ONE_DAY", 864e5]];
+const S_HIST = {};
+let histBusy = false;
+async function bars(conid, ex, secType, step, count) {
+  const input = { contract_id: conid, security_type: secType, step, step_count: count, outside_rth: true };
+  if (ex && ex !== "SMART") input.exchange = ex;
+  const p = await ib("get_price_history", input);
+  const t = p?.time || [], c = p?.close || [];
+  return t.map((x, i) => [Date.parse(x), num(c[i])]).filter((b) => b[1] != null && isFinite(b[0])).sort((a, b) => a[0] - b[0]);
+}
+function at(series, t) {
+  if (!series || !series.length || series[0][0] > t) return null;
+  let lo = 0, hi = series.length - 1;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (series[m][0] <= t) lo = m; else hi = m - 1; }
+  return series[lo][1];
+}
+async function computeHistory(force) {
+  const c = cfg();
+  if (histBusy || S.ibkr !== "ready" || !canWrite() || !c.startedAt) return;
+  const now = Date.now(), el = Math.max(now - c.startedAt, 60e3);
+  const [, step, ms] = HIST_STEPS.find((x) => el <= x[0]);
+  const fresh = SEATS.every((k) => !S.seats[k]?.uid || (S_HIST[k] && now - (S_HIST[k].computedAt || 0) < Math.max(5 * 60e3, ms) && S_HIST[k].fills === fillsSig(k)));
+  if (fresh && !force) return;
+  histBusy = true;
+  try {
+    const count = Math.min(1000, Math.ceil(el / ms) + 3);
+    const conids = [...new Set(S.orders.filter((o) => o.status === "filled").map((o) => String(o.conid)))];
+    const px = {}, fxS = {};
+    for (const id of conids) {
+      const inst = S.inst[id]; if (!inst) continue;
+      let b = await bars(inst.conid, routeEx(inst), "STK", step, count);
+      const q = S.quotes[id];
+      if (MINOR[inst.ccy] && b.length && q?.price && q.price / b[b.length - 1][1] > 30) b = b.map(([t, v]) => [t, v * 100]);
+      px[id] = b;
+      const m = major(inst.ccy);
+      if (m !== "USD" && !fxS[m]) { const meta = await resolveFx(m); fxS[m] = (await bars(meta.conid, "IDEALPRO", "CASH", step, count)).map(([t, v]) => [t, meta.invert ? 1 / v : v]); }
+    }
+    const grid = [];
+    for (let t = c.startedAt; t < now; t += ms) grid.push(t);
+    for (const k of SEATS) {
+      if (!S.seats[k]?.uid) continue;
+      const points = grid.map((t) => {
+        const r = replay(k, t);
+        let v = r.cash;
+        for (const p of Object.values(r.pos)) {
+          const inst = S.inst[String(p.conid)] || {};
+          const lp = at(px[String(p.conid)], t);
+          const m = major(inst.ccy || "USD");
+          const fx = m === "USD" ? 1 : (at(fxS[m], t) ?? S.fx[m]?.usdPer ?? 1);
+          v += p.qty * (lp != null ? lp * fx / minorDiv(inst.ccy || "USD") : p.lastUsd);
+        }
+        return [t, Math.round(v * 100) / 100];
+      });
+      const doc = { points, step, computedAt: now, fills: fillsSig(k) };
+      S_HIST[k] = doc;
+      await db.doc("history/" + k).set(doc).catch(() => {});
+    }
+    renderChart();
+  } catch (e) { if (e?.code) ibErr(e); else console.warn("history", e); }
+  finally { histBusy = false; }
+}
+function fillsSig(k) { return S.orders.filter((o) => o.player === k && o.status === "filled").map((o) => o.id).sort().join(","); }
+
+function niceStep(span, n) { const raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw))); const f = raw / mag; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * mag; }
+let chartGeom = null;
+function renderChart() {
+  const box = $("chart"), c = cfg();
+  if (!box) return;
+  const series = SEATS.filter((k) => S.seats[k]?.uid).map((k) => {
+    const pts = (S_HIST[k]?.points || []).filter((p) => p[0] >= (c.startedAt || 0)).slice();
+    if (!pts.length && c.startedAt) pts.push([c.startedAt, c.startCash]);
+    pts.push([Date.now(), Math.round(value(k).total * 100) / 100]);
+    return { k, pts };
+  });
+  $("legend").replaceChildren(...series.map((s) => h("span", {}, h("i", { style: "background:var(--" + s.k + ")" }), nm(s.k))));
+  if (!c.startedAt || !series.length) { box.replaceChildren(h("div", { class: "empty", text: "The chart starts when the game starts." })); return; }
+  const W = Math.max(300, box.clientWidth || 600), H = Math.round(Math.min(320, Math.max(200, W * 0.42)));
+  const m = { l: 62, r: 92, t: 12, b: 26 };
+  const x0 = c.startedAt, x1 = Math.max(Date.now(), x0 + 60e3);
+  let lo = c.startCash, hi = c.startCash;
+  for (const s of series) for (const [, v] of s.pts) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  const pad = Math.max((hi - lo) * 0.12, c.startCash * 0.002);
+  lo -= pad; hi += pad;
+  const ys = niceStep(hi - lo, 4);
+  lo = Math.floor(lo / ys) * ys; hi = Math.ceil(hi / ys) * ys;
+  const X = (t) => m.l + (t - x0) / (x1 - x0) * (W - m.l - m.r);
+  const Y = (v) => m.t + (hi - v) / (hi - lo) * (H - m.t - m.b);
+  const NS = "http://www.w3.org/2000/svg";
+  const sv = (tag, a) => { const e = document.createElementNS(NS, tag); for (const k in a) e.setAttribute(k, a[k]); return e; };
+  const svg = sv("svg", { viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "Portfolio value over time for each player" });
+  const money = (v) => "$" + v.toLocaleString("en-US", { maximumFractionDigits: ys < 1 ? 2 : 0, minimumFractionDigits: ys < 1 ? 2 : 0 });
+  for (let v = lo; v <= hi + ys / 2; v += ys) {
+    svg.append(sv("line", { class: "grid", x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v) }));
+    const t = sv("text", { class: "ax", x: m.l - 8, y: Y(v) + 4, "text-anchor": "end" }); t.textContent = money(v); svg.append(t);
+  }
+  const span = x1 - x0, nT = Math.max(1, Math.min(6, Math.floor((W - m.l - m.r) / 95)));
+  for (let i = 0; i <= nT; i++) {
+    const t = x0 + span * i / nT;
+    const d = new Date(t);
+    const lab = span < 2 * 864e5 ? d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+    const e = sv("text", { class: "ax", x: X(t), y: H - 6, "text-anchor": i === 0 ? "start" : i === nT ? "end" : "middle" }); e.textContent = lab; svg.append(e);
+  }
+  svg.append(sv("line", { class: "base", x1: m.l, x2: W - m.r, y1: Y(c.startCash), y2: Y(c.startCash) }));
+  const ends = [];
+  for (const s of series) {
+    const d = s.pts.map(([t, v], i) => (i ? "L" : "M") + X(t).toFixed(1) + " " + Y(v).toFixed(1)).join(" ");
+    svg.append(sv("path", { d, fill: "none", stroke: "var(--" + s.k + ")", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    const [lt, lv] = s.pts[s.pts.length - 1];
+    svg.append(sv("circle", { cx: X(lt), cy: Y(lv), r: 4, fill: "var(--" + s.k + ")", stroke: "var(--surface)", "stroke-width": 2 }));
+    ends.push({ k: s.k, y: Y(lv), v: lv });
+  }
+  ends.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 16) ends[i].y = ends[i - 1].y + 16;
+  for (const e of ends) { const t = sv("text", { class: "lbl", x: W - m.r + 10, y: e.y + 4 }); t.textContent = nm(e.k) + " " + money(Math.round(e.v)); svg.append(t); }
+  const xh = sv("line", { class: "xh", y1: m.t, y2: H - m.b, visibility: "hidden" });
+  svg.append(xh);
+  const hit = sv("rect", { x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent" });
+  svg.append(hit);
+  const tip = h("div", { class: "tip", hidden: true });
+  const move = (ev) => {
+    const r = svg.getBoundingClientRect(), sx = (ev.clientX - r.left) * W / r.width;
+    const t = x0 + (Math.min(Math.max(sx, m.l), W - m.r) - m.l) / (W - m.l - m.r) * span;
+    xh.setAttribute("x1", X(t)); xh.setAttribute("x2", X(t)); xh.setAttribute("visibility", "visible");
+    tip.replaceChildren(h("b", { text: new Date(t).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) }),
+      ...series.map((s) => { const v = at(s.pts, t) ?? s.pts[0][1]; return h("span", {}, h("span", { class: "sw", style: "background:var(--" + s.k + ")" }), nm(s.k) + " ", h("span", { class: "mono", text: usd(v) + " (" + pct(v / c.startCash - 1) + ")" })); }));
+    tip.hidden = false;
+    const px = X(t) * r.width / W;
+    tip.style.left = Math.min(Math.max(px + 12, 0), r.width - tip.offsetWidth) + "px";
+  };
+  hit.addEventListener("pointermove", move);
+  hit.addEventListener("pointerdown", move);
+  hit.addEventListener("pointerleave", () => { xh.setAttribute("visibility", "hidden"); tip.hidden = true; });
+  box.replaceChildren(svg, tip);
+  const st = SEATS.map((k) => S_HIST[k]?.computedAt).filter(Boolean);
+  $("chartnote").textContent = st.length ? "Built from IBKR price history, last rebuilt " + dt(Math.min(...st)) + ". The time axis runs from the game start to now." : (S.ibkr === "ready" ? "Building the history from IBKR…" : "The full history appears once a player with IBKR opens the page.");
+}
+let lastW = 0;
+new ResizeObserver(() => { const w = $("chart")?.clientWidth || 0; if (Math.abs(w - lastW) > 8) { lastW = w; renderChart(); } }).observe(document.body);
+
 async function tick() {
   if (S.ibkr !== "ready" || document.hidden) return;
   try {
     const held = new Set();
     for (const k of SEATS) for (const id of Object.keys(replay(k, Date.now()).pos)) held.add(id);
     if (held.size) await refreshQuotes([...held]);
+    await computeHistory();
     await processPending();
   } catch (e) { if (e?.code) ibErr(e); else console.warn(e); }
 }
@@ -759,12 +916,13 @@ async function loadQuote() {
 let rafPending = false;
 function renderAll() {
   if (rafPending) return; rafPending = true;
-  requestAnimationFrame(() => { rafPending = false; renderStatus(); renderBoard(); renderHoldings(); renderLog(); renderRules(); renderTicket(); });
+  requestAnimationFrame(() => { rafPending = false; renderStatus(); renderBoard(); renderChart(); renderHoldings(); renderLog(); renderRules(); renderTicket(); });
 }
 
 function route() {
   const v = location.hash === "#orders" ? "orders" : "standings";
   for (const x of ["standings", "orders"]) { $("view-" + x).hidden = x !== v; $("tab-" + x).setAttribute("aria-selected", String(x === v)); }
+  if (v === "standings" && typeof renderChart === "function") requestAnimationFrame(renderChart);
 }
 window.addEventListener("hashchange", route);
 route();
@@ -791,6 +949,7 @@ async function boot() {
   }, fail);
   db.collection("quotes").onSnapshot((s) => { S.quotes = {}; for (const d of s.docs) S.quotes[d.id] = d.data(); renderAll(); }, fail);
   db.collection("fx").onSnapshot((s) => { S.fx = {}; for (const d of s.docs) S.fx[d.id] = d.data(); }, fail);
+  db.collection("history").onSnapshot((s) => { for (const d of s.docs) S_HIST[d.id] = d.data(); renderChart(); }, fail);
   db.collection("instruments").onSnapshot((s) => { S.inst = {}; for (const d of s.docs) S.inst[d.id] = d.data(); renderAll(); }, fail);
   await initIbkr();
   renderAll();
