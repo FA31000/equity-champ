@@ -244,12 +244,26 @@ function replay(seat, upTo) {
     if (ev.pen) { cash -= ev.pen; penaltyTotal += ev.pen; continue; }
     const o = ev.o, id = String(o.conid);
     const p = pos[id] || (pos[id] = { conid: o.conid, symbol: o.symbol, qty: 0, cost: 0, lastUsd: null });
-    if (o.side === "buy") { cash -= o.usdValue; p.qty += o.qty; p.cost += o.usdValue; }
-    else { realized[o.id] = o.usdValue - (p.qty > 0 ? p.cost / p.qty : 0) * o.qty; const frac = p.qty > 0 ? Math.min(1, o.qty / p.qty) : 1; p.cost -= p.cost * frac; p.qty -= o.qty; cash += o.usdValue; }
+    // Signed quantities: a buy adds o.qty (negative = short sale), a sell removes o.qty from a long.
+    const dq = o.side === "buy" ? o.qty : -o.qty;
+    cash -= dq * o.usdPrice;
+    const rz = applyTrade(p, dq, o.usdPrice);
+    if (rz != null) realized[o.id] = rz;
     p.lastUsd = o.usdPrice;
-    if (p.qty < 1e-9) delete pos[id];
+    if (Math.abs(p.qty) < 1e-9) delete pos[id];
   }
   return { cash, pos, weeks, penaltyTotal, realized };
+}
+// Moves a position by dq shares at px; returns realized P&L on the part that closed, or null if nothing closed.
+function applyTrade(p, dq, px) {
+  if (Math.abs(p.qty) < 1e-9 || Math.sign(p.qty) === Math.sign(dq)) { p.cost += dq * px; p.qty += dq; return null; }
+  const closeQ = Math.sign(dq) * Math.min(Math.abs(dq), Math.abs(p.qty));
+  const avg = p.cost / p.qty;
+  const realized = -closeQ * (px - avg);
+  p.cost += closeQ * avg; p.qty += closeQ;
+  const rest = dq - closeQ;
+  if (Math.abs(rest) > 1e-12) { p.cost += rest * px; p.qty += rest; }
+  return realized;
 }
 function value(seat, quoteMap) {
   const r = replay(seat, Date.now());
@@ -260,7 +274,8 @@ function value(seat, quoteMap) {
     p.value = p.qty * p.usdPrice;
     invested += p.value;
   }
-  return Object.assign(r, { invested, total: r.cash + invested });
+  const gross = Object.values(r.pos).reduce((a, p) => a + Math.abs(p.value), 0);
+  return Object.assign(r, { invested, gross, total: r.cash + invested });
 }
 
 // ---------- IBKR calls ----------
@@ -413,22 +428,29 @@ async function fillOneInner(id) {
   const heldQty = held?.qty || 0, heldVal = held ? heldQty * q.usdPrice : 0;
   let qty, amt;
   if (o.side === "buy") {
-    amt = num(o.buyQty) ? o.buyQty * q.usdPrice : num(o.usdAmount);
-    if (!(amt > 0)) return reject("Amount must be above zero");
-    if (!held && Object.keys(v.pos).length >= c.maxHoldings) return reject("Already holding " + c.maxHoldings + " different stocks: sell one first");
-    if (amt > v.cash + 0.005) return reject("Not enough cash (" + usd(v.cash) + " available)");
-    const cap = c.maxPositionPct * P - heldVal;
-    if (amt > cap + 0.005) return reject("Over the " + Math.round(c.maxPositionPct * 100) + "% limit: max buy was " + usd(Math.max(0, cap)));
-    qty = num(o.buyQty) || amt / q.usdPrice;
+    const bq = num(o.buyQty);
+    amt = bq ? bq * q.usdPrice : num(o.usdAmount);
+    if (!amt) return reject("Amount can't be zero");
+    qty = bq || amt / q.usdPrice;
+    const newQty = heldQty + qty;
+    if (Math.abs(newQty) > Math.abs(heldQty) + 1e-9) { // exposure grows: apply the limits
+      const kind = newQty < 0 ? "short" : "buy";
+      if (!held && Object.keys(v.pos).length >= c.maxHoldings) return reject("Already in " + c.maxHoldings + " different stocks: close one first");
+      const capV = c.maxPositionPct * P;
+      if (Math.abs(newQty) * q.usdPrice > capV + 0.005) return reject("Over the " + Math.round(c.maxPositionPct * 100) + "% limit: the position can be at most " + usd(capV) + ", max " + kind + " was " + usd(Math.max(0, capV - Math.abs(heldVal))));
+      const grossAfter = v.gross - Math.abs(heldVal) + Math.abs(newQty) * q.usdPrice;
+      if (grossAfter > P + 0.005) return reject("No leverage: longs plus shorts can't exceed your portfolio value. Max " + kind + " was " + usd(Math.max(0, P - (v.gross - Math.abs(heldVal)) - Math.abs(heldVal))));
+    }
   } else {
     qty = o.sellAll ? heldQty : num(o.qty);
-    if (!(qty > 0)) return reject(heldQty ? "Quantity must be above zero" : "You don't hold " + o.symbol);
+    if (heldQty <= 0) return reject(heldQty < 0 ? "You're short " + o.symbol + ": buy to cover instead" : "You don't hold " + o.symbol);
+    if (!(qty > 0)) return reject("Quantity must be above zero");
     if (qty > heldQty + 1e-9) return reject("You hold only " + qtyFmt(heldQty) + " " + o.symbol);
     amt = qty * q.usdPrice;
   }
   await ref.update({ status: "filled", filledAt: Date.now(), qty, price: q.price, ccy: inst.ccy, usdPer: q.usdPer, usdPrice: q.usdPrice,
-    usdValue: amt, pct: amt / P, portfolioAtFill: P, wait: { __delete__: true } }).catch(() =>
-    ref.update({ status: "filled", filledAt: Date.now(), qty, price: q.price, ccy: inst.ccy, usdPer: q.usdPer, usdPrice: q.usdPrice, usdValue: amt, pct: amt / P, portfolioAtFill: P, wait: null }));
+    usdValue: amt, pct: Math.abs(amt) / P, portfolioAtFill: P, wait: { __delete__: true } }).catch(() =>
+    ref.update({ status: "filled", filledAt: Date.now(), qty, price: q.price, ccy: inst.ccy, usdPer: q.usdPer, usdPrice: q.usdPrice, usdValue: amt, pct: Math.abs(amt) / P, portfolioAtFill: P, wait: null }));
 }
 function canWrite() { return !!db && S.canWrite !== false; }
 
@@ -443,7 +465,7 @@ async function placeOrder(side) {
   if (side === "buy") {
     const amt = num($("amt")?.value);
     const inShares = $("bunit")?.value === "shares";
-    if (!(amt > 0)) return setMsg(inShares ? "Enter how many shares to buy." : "Enter a dollar amount to buy.", "err");
+    if (!amt) return setMsg(inShares ? "Enter how many shares to buy, or a negative number to short." : "Enter a dollar amount to buy, or a negative amount to short.", "err");
     if (inShares) o.buyQty = amt; else o.usdAmount = Math.round(amt * 100) / 100;
   } else {
     const all = $("sellall")?.checked;
@@ -760,7 +782,7 @@ function renderLog() {
     let now = null, g = null, gp = null;
     if (o.status === "filled") {
       now = num(S.quotes[String(o.conid)]?.usdPrice);
-      if (o.side === "buy" && now != null) { g = (now - o.usdPrice) * o.qty; gp = now / o.usdPrice - 1; }
+      if (o.side === "buy" && now != null) { g = (now - o.usdPrice) * o.qty; gp = Math.sign(o.qty) * (now / o.usdPrice - 1); }
       else if (o.side === "sell" && rz[o.id] != null) { g = rz[o.id]; const basis = o.usdValue - g; gp = basis > 0 ? g / basis : null; }
     }
     const cls = g == null ? "n" : "n " + (g >= 0 ? "up" : "down");
@@ -775,7 +797,7 @@ function renderLog() {
       return h("tr", { class: o.status === "voided" ? "voided" : null },
         h("td", { class: "muted", text: dt(o.filledAt || o.createdAt) }),
         h("td", {}, h("span", { class: "sw", style: "background:var(--" + (o.player === "p2" ? "p2" : "p1") + ")" }), nm(o.player === "p2" ? "p2" : "p1")),
-        h("td", { class: o.side === "buy" ? "side-b" : "side-s", text: o.side === "buy" ? "BUY" : "SELL" }),
+        h("td", { class: o.side === "buy" && !(o.qty < 0 || o.usdAmount < 0 || o.buyQty < 0) ? "side-b" : "side-s", text: o.side === "buy" ? ((o.qty < 0 || o.usdAmount < 0 || o.buyQty < 0) ? "SHORT" : "BUY") : "SELL" }),
         h("td", {}, h("b", { class: "mono", text: o.symbol || o.lookupSymbol || "?" }), " ", h("span", { class: "muted", text: o.exchange || o.lookupExchange || "" })),
         h("td", { class: "n", text: o.status === "filled" ? qtyFmt(o.qty) : o.sellAll ? "all" : o.buyQty ? qtyFmt(o.buyQty) : o.qty ? qtyFmt(o.qty) : "—" }),
         h("td", { class: "n", text: o.usdPrice != null ? usd(o.usdPrice) : "—" }),
@@ -793,7 +815,8 @@ function renderRules() {
   const c = cfg();
   $("rules").replaceChildren(
     h("div", {}, h("div", { class: "label", text: "Starting cash" }), h("b", { text: usd(c.startCash) }), " each. Everything is counted and shown in USD. Global stocks and ETFs, long only, fractional shares, no fees. Cash earns no interest."),
-    h("div", {}, h("div", { class: "label", text: "Diversification" }), "At most ", h("b", { text: String(c.maxHoldings) }), " different stocks held at once."),
+    h("div", {}, h("div", { class: "label", text: "Diversification" }), "At most ", h("b", { text: String(c.maxHoldings) }), " different stocks at once, longs and shorts together."),
+    h("div", {}, h("div", { class: "label", text: "Shorting" }), "Enter a negative amount in Buy to short; buy back to cover. The 25% cap applies to shorts. No leverage: longs plus shorts can't exceed portfolio value. No borrow fees."),
     h("div", {}, h("div", { class: "label", text: "Position cap" }), "A buy can't take one stock above ", h("b", { text: Math.round(c.maxPositionPct * 100) + "%" }), " of your portfolio value at that moment. It can drift higher afterwards."),
     h("div", {}, h("div", { class: "label", text: "Weekly trade" }), "Each 7-day week from the start, make at least one buy or sell worth ", h("b", { text: Math.round(c.minWeeklyTradePct * 100) + "%" }), " of your portfolio. Miss it and ", h("b", { text: usd(c.missedWeekPenalty) }), " comes out of your cash."),
     h("div", {}, h("div", { class: "label", text: "Scoring" }), "Total value in USD: cash plus holdings at the latest IBKR price and FX rate. Highest value leads."),
@@ -841,8 +864,9 @@ function renderTicket() {
     const pos = inst.conid ? v.pos[String(inst.conid)] : null;
     const q = T.quote || (inst.conid ? S.quotes[String(inst.conid)] : null);
     const usdPx = num(q?.usdPrice);
-    const cur = pos && usdPx ? pos.qty * usdPx : 0;
-    const maxBuy = Math.max(0, Math.min(v.cash, c.maxPositionPct * (v.cash + v.invested - (pos ? pos.value : 0) + cur) - cur));
+    const cur = pos && usdPx ? Math.abs(pos.qty * usdPx) : 0;
+    const otherGross = v.gross - (pos ? Math.abs(pos.value) : 0);
+    const maxBuy = Math.max(0, Math.min(v.total - otherGross - cur, c.maxPositionPct * v.total - cur));
     const ccySel = inst.conid && !known
       ? h("select", { id: "ccy", onchange: (e) => { T.sel = Object.assign({}, T.sel, { ccy: e.target.value }); T.quote = null; renderTicket(); loadQuote(); } },
           CCY_LIST.map((x) => { const o = h("option", { value: x, text: x }); if (x === inst.ccy) o.selected = true; return o; }))
@@ -859,16 +883,16 @@ function renderTicket() {
         ccySel ? h("span", { class: "muted", style: "font-size:13px", text: "Guessed from the listing. London quotes are usually GBX (pence); some LSE ETFs trade in USD. Locked after the first trade." }) : null) : null,
       h("div", { class: "sides" },
         h("div", { class: "side" }, h("label", { class: "label", for: "amt", text: "Buy" }),
-          h("div", { class: "row" }, h("input", { id: "amt", type: "number", min: "0", step: "any", inputmode: "decimal", placeholder: "Amount", style: "flex:1 1 100px", oninput: buyPreview }),
+          h("div", { class: "row" }, h("input", { id: "amt", type: "number", step: "any", inputmode: "text", placeholder: "Amount (negative = short)", style: "flex:1 1 100px", oninput: buyPreview }),
             h("select", { id: "bunit", "aria-label": "Buy in", onchange: buyPreview }, h("option", { value: "usd", text: "USD" }), h("option", { value: "shares", text: "shares" }))),
           h("div", { id: "bprev", class: "muted mono", style: "font-size:13px;min-height:1.2em" }),
-          h("div", { class: "muted", style: "font-size:13px", text: (!pos && Object.keys(v.pos).length >= c.maxHoldings) ? "You already hold " + c.maxHoldings + " different stocks. Sell one to buy a new one." : usdPx ? "Max " + usd(maxBuy) + " (cash " + usd(v.cash) + ", " + Math.round(c.maxPositionPct * 100) + "% cap)." : "Cash " + usd(v.cash) + ". The " + Math.round(c.maxPositionPct * 100) + "% cap is checked at fill." }),
+          h("div", { class: "muted", style: "font-size:13px", text: (!pos && Object.keys(v.pos).length >= c.maxHoldings) ? "You're already in " + c.maxHoldings + " different stocks. Close one to open a new one." : (usdPx ? "Max " + usd(maxBuy) + " more " + (pos && pos.qty < 0 ? "short" : "long") + " (" + Math.round(c.maxPositionPct * 100) + "% cap, no leverage). " : "Limits are checked at fill. ") + "A negative amount sells short." }),
           h("button", { class: "buy", disabled: T.busy, onclick: () => placeOrder("buy"), text: "Buy " + inst.symbol })),
         h("div", { class: "side" }, h("label", { class: "label", for: "sqty", text: "Sell, in shares" }),
           h("div", { class: "row" }, h("input", { id: "sqty", type: "number", min: "0", step: "any", inputmode: "decimal", placeholder: pos ? qtyFmt(pos.qty) : "0", style: "flex:1 1 100px" }),
             h("label", { style: "display:flex;gap:6px;align-items:center" }, h("input", { id: "sellall", type: "checkbox" }), "Sell all")),
-          h("div", { class: "muted", style: "font-size:13px", text: pos ? "You hold " + qtyFmt(pos.qty) + " (" + usd(pos.value) + ")." : "You don't hold this." }),
-          h("button", { class: "sell", disabled: T.busy || (inst.conid && !pos), onclick: () => placeOrder("sell"), text: "Sell " + inst.symbol }))),
+          h("div", { class: "muted", style: "font-size:13px", text: pos ? (pos.qty < 0 ? "You're short " + qtyFmt(-pos.qty) + " (" + usd(-pos.value) + "). Buy to cover." : "You hold " + qtyFmt(pos.qty) + " (" + usd(pos.value) + ").") : "You don't hold this." }),
+          h("button", { class: "sell", disabled: T.busy || (inst.conid && !(pos && pos.qty > 0)), onclick: () => placeOrder("sell"), text: "Sell " + inst.symbol }))),
       h("div", {}, h("button", { class: "link", onclick: () => { T.sel = null; T.quote = null; T.msg = null; renderTicket(); }, text: "Pick a different stock" }))));
   }
   if (S.ibkr === "ready" && !T.manual && !T.sel) kids.push(h("div", {}, h("button", { class: "link", onclick: () => { T.manual = true; renderTicket(); }, text: "Can't find it? Type a ticker by hand" })));
